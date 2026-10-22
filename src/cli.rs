@@ -128,6 +128,14 @@ pub struct ResearchArgs {
     )]
     pub prompt_file: Option<PathBuf>,
 
+    /// Existing Gemini conversation URL to resume (e.g. https://gemini.google.com/app/...)
+    #[arg(
+        long = "conversation",
+        value_name = "URL",
+        help = "Existing Gemini conversation URL to resume"
+    )]
+    pub conversation: Option<String>,
+
     /// Destination file for the complete research dossier
     #[arg(
         short = 'o',
@@ -138,12 +146,12 @@ pub struct ResearchArgs {
     )]
     pub output: PathBuf,
 
-    /// Timeout in seconds (Deep Research may take several minutes)
+    /// Timeout in seconds (Deep Research may take 5-20 minutes, default: 1800s / 30m)
     #[arg(
         long = "timeout",
-        default_value = "600",
+        default_value = "1800",
         value_name = "SECS",
-        help = "Operation timeout in seconds"
+        help = "Operation timeout in seconds (default: 1800)"
     )]
     pub timeout: u64,
 }
@@ -155,6 +163,9 @@ impl ResearchArgs {
         }
         if let Some(ref path) = self.prompt_file {
             return fs::read_to_string(path).map_err(|e| AxiError::FileRead(path.clone(), e));
+        }
+        if self.conversation.is_some() {
+            return Ok(String::new());
         }
         Err(AxiError::EmptyPrompt)
     }

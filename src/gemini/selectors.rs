@@ -108,6 +108,8 @@ pub const DEEP_RESEARCH_PROGRESS_SELECTORS: &[&str] = &[
 
 /// Selectors for the model's response container.
 pub const RESPONSE_CONTAINER_SELECTORS: &[&str] = &[
+    "#extended-response-markdown-content",
+    "[id*=\"extended-response\"]",
     "message-content .markdown",
     "message-content",
     ".model-response-text message-content",
@@ -339,6 +341,11 @@ pub fn check_research_plan_js() -> String {
         serde_json::to_string(DEEP_RESEARCH_PLAN_SELECTORS).unwrap_or_default();
     format!(
         r#"(() => {{
+            // If research is already completed, the plan is no longer awaiting approval
+            if (document.querySelector('gem-processing-card.completed, #extended-response-markdown-content')) {{
+                return false;
+            }}
+
             const approveSelectors = {approve_selectors_json};
             for (const sel of approveSelectors) {{
                 const el = document.querySelector(sel);
@@ -364,25 +371,40 @@ pub fn check_research_plan_js() -> String {
     )
 }
 
-/// Generates a JS expression to approve the Deep Research plan.
+/// Generates a JS expression to approve the Deep Research plan by clicking "Iniciar pesquisa" / "Start research".
 pub fn approve_research_plan_js() -> String {
     let approve_selectors_json =
         serde_json::to_string(DEEP_RESEARCH_APPROVE_BUTTON_SELECTORS).unwrap_or_default();
     format!(
         r#"(() => {{
+            function triggerClick(el) {{
+                el.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+                el.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true, cancelable: true }}));
+                el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true, cancelable: true }}));
+                el.dispatchEvent(new PointerEvent('pointerup', {{ bubbles: true, cancelable: true }}));
+                el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true }}));
+                el.click();
+            }}
+
             const approveSelectors = {approve_selectors_json};
             for (const sel of approveSelectors) {{
                 const el = document.querySelector(sel);
                 if (el && !el.disabled) {{
-                    el.click();
-                    return true;
+                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    if (!aria.includes('sem a ferramenta')) {{
+                        triggerClick(el);
+                        return true;
+                    }}
                 }}
             }}
-            const buttons = document.querySelectorAll('button');
+            const buttons = document.querySelectorAll('button, [role="button"]');
             for (const b of buttons) {{
-                const t = (b.textContent || '').trim().toLowerCase();
-                if (t.includes('start research') || t.includes('iniciar pesquisa') || t.includes('aprovar plano')) {{
-                    b.click();
+                const t = (b.textContent || b.innerText || '').trim().toLowerCase();
+                const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                if ((t.includes('start research') || t.includes('iniciar pesquisa') || t.includes('aprovar plano') ||
+                     aria.includes('start research') || aria.includes('iniciar pesquisa')) &&
+                    !aria.includes('sem a ferramenta') && !t.includes('sem a ferramenta')) {{
+                    triggerClick(b);
                     return true;
                 }}
             }}
@@ -397,18 +419,26 @@ pub fn is_research_in_progress_js() -> String {
         serde_json::to_string(DEEP_RESEARCH_PROGRESS_SELECTORS).unwrap_or_default();
     format!(
         r#"(() => {{
-            const progressSelectors = {progress_selectors_json};
-            for (const sel of progressSelectors) {{
-                const matches = document.querySelectorAll(sel);
-                for (const el of matches) {{
-                    if (el && (el.offsetWidth > 0 || el.offsetHeight > 0)) {{
-                        if (!el.closest('bard-sidenav, side-navigation-v2')) {{
-                            return true;
-                        }}
-                    }}
+            // 1. Stop button present
+            const stopButtons = Array.from(document.querySelectorAll('button')).filter(b => {{
+                const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                return (aria.includes('parar resposta') || aria.includes('stop response') ||
+                        aria.includes('parar') || aria.includes('stop')) &&
+                       !aria.includes('mais') && !aria.includes('filtro');
+            }});
+            if (stopButtons.length > 0) return true;
+
+            // 2. Current step active (only if NOT inside a completed card and NOT a completion timestamp)
+            const currentStep = document.querySelector('.current-step');
+            if (currentStep && !currentStep.closest('.completed') && (currentStep.offsetWidth > 0 || currentStep.offsetHeight > 0)) {{
+                const text = (currentStep.innerText || '').trim();
+                const isDate = /\d{{1,2}}\s+(de\s+[a-z]+|\/)\s*,\s*\d{{1,2}}:\d{{2}}/i.test(text);
+                if (!isDate) {{
+                    return true;
                 }}
             }}
-            // Check for progress indicators or spinners inside main chat area
+
+            // 3. Check for progress indicators or spinners inside main chat area
             const spinners = document.querySelectorAll('mat-progress-bar, mat-progress-spinner, .sparkle-spinner');
             for (const s of spinners) {{
                 if (s && (s.offsetWidth > 0 || s.offsetHeight > 0)) {{
@@ -417,7 +447,180 @@ pub fn is_research_in_progress_js() -> String {
                     }}
                 }}
             }}
+
+            // 4. Research step elements
+            const progressSelectors = {progress_selectors_json};
+            for (const sel of progressSelectors) {{
+                const matches = document.querySelectorAll(sel);
+                for (const el of matches) {{
+                    if (el && (el.offsetWidth > 0 || el.offsetHeight > 0)) {{
+                        if (!el.closest('bard-sidenav, side-navigation-v2')) {{
+                            if (el.querySelector('mat-progress-bar, mat-progress-spinner, .sparkle-spinner')) {{
+                                return true;
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+
             return false;
+        }})()"#
+    )
+}
+
+/// Generates a JS expression to get the current Deep Research progress message, if any.
+pub fn get_research_progress_js() -> String {
+    r#"(() => {
+        const step = document.querySelector('.current-step');
+        if (step && !step.closest('.completed')) {
+            const text = (step.innerText || '').trim();
+            const isDate = /\d{1,2}\s+(de\s+[a-z]+|\/)\s*,\s*\d{1,2}:\d{2}/i.test(text);
+            if (text && !isDate) {
+                return text;
+            }
+        }
+        const activeSteps = Array.from(document.querySelectorAll('.research-step'));
+        for (const s of activeSteps) {
+            if (s.querySelector('mat-progress-bar, mat-progress-spinner, .sparkle-spinner')) {
+                const text = (s.innerText || '').trim();
+                if (text) return text;
+            }
+        }
+        return null;
+    })()"#
+        .to_string()
+}
+
+/// Generates a JS expression to extract the completed Deep Research dossier as Markdown.
+/// Explicitly rejects the plan confirmation and progress messages, returning null if
+/// only the plan or progress is present.
+pub fn extract_research_report_js(initial_count: usize) -> String {
+    let response_selectors_json =
+        serde_json::to_string(RESPONSE_CONTAINER_SELECTORS).unwrap_or_default();
+    format!(
+        r#"(() => {{
+            const initialCount = {initial_count};
+            const selectors = {response_selectors_json};
+            let candidateContainers = [];
+            for (const sel of selectors) {{
+                const matches = document.querySelectorAll(sel);
+                if (matches.length > initialCount) {{
+                    for (let i = initialCount; i < matches.length; i++) {{
+                        candidateContainers.push(matches[i]);
+                    }}
+                    break;
+                }}
+            }}
+
+            function isPlan(el) {{
+                const text = (el.innerText || el.textContent || '').toLowerCase();
+                if (text.includes('aqui está meu plano') || text.includes("here's my plan")) return true;
+                if (text.includes('iniciar pesquisa') || text.includes('start research')) return true;
+                if (text.includes('editar plano') || text.includes('edit plan')) return true;
+                if (el.querySelector('button[aria-label*="iniciar pesquisa" i], button[aria-label*="start research" i]')) return true;
+                return false;
+            }}
+
+            function isProgressOnly(el) {{
+                const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+                if (text.includes('enquanto estou a investigar') || text.includes('while i am investigating')) return true;
+                if (text.length < 300 && (text.includes('pesquisando em') || text.includes('analisar resultados') || text.includes('criar relatório') || text.includes('elementos visuais'))) return true;
+                return false;
+            }}
+
+            function nodeToMarkdown(node) {{
+                if (node.nodeType === Node.TEXT_NODE) {{
+                    return node.textContent;
+                }}
+                if (node.nodeType !== Node.ELEMENT_NODE) {{
+                    return '';
+                }}
+                const tag = node.tagName.toLowerCase();
+
+                // Fenced code blocks
+                if (tag === 'pre') {{
+                    const code = node.querySelector('code') || node;
+                    const lang = (code.className.match(/language-(\w+)/) || ['', ''])[1];
+                    return '\n```' + lang + '\n' + (code.innerText || code.textContent).trim() + '\n```\n';
+                }}
+                if (tag === 'code') {{
+                    return '`' + node.textContent + '`';
+                }}
+
+                // Headings
+                if (/^h[1-6]$/.test(tag)) {{
+                    const level = parseInt(tag[1], 10);
+                    const prefix = '#'.repeat(level);
+                    return '\n' + prefix + ' ' + node.textContent.trim() + '\n\n';
+                }}
+
+                // Lists
+                if (tag === 'ul') {{
+                    let text = '\n';
+                    for (const li of node.children) {{
+                        if (li.tagName.toLowerCase() === 'li') {{
+                            text += '- ' + nodeToMarkdown(li).trim() + '\n';
+                        }}
+                    }}
+                    return text + '\n';
+                }}
+                if (tag === 'ol') {{
+                    let text = '\n';
+                    let idx = 1;
+                    for (const li of node.children) {{
+                        if (li.tagName.toLowerCase() === 'li') {{
+                            text += idx + '. ' + nodeToMarkdown(li).trim() + '\n';
+                            idx++;
+                        }}
+                    }}
+                    return text + '\n';
+                }}
+
+                if (tag === 'p') {{
+                    let inner = '';
+                    for (const child of node.childNodes) {{
+                        inner += nodeToMarkdown(child);
+                    }}
+                    return inner.trim() ? inner.trim() + '\n\n' : '';
+                }}
+                if (tag === 'blockquote') {{
+                    return '> ' + node.textContent.trim().replace(/\n/g, '\n> ') + '\n\n';
+                }}
+
+                // Formatting
+                if (tag === 'strong' || tag === 'b') {{
+                    return '**' + node.textContent + '**';
+                }}
+                if (tag === 'em' || tag === 'i') {{
+                    return '*' + node.textContent + '*';
+                }}
+                if (tag === 'a') {{
+                    return '[' + node.textContent + '](' + (node.getAttribute('href') || '#') + ')';
+                }}
+                if (tag === 'hr') {{
+                    return '\n---\n\n';
+                }}
+
+                let result = '';
+                for (const child of node.childNodes) {{
+                    result += nodeToMarkdown(child);
+                }}
+                return result;
+            }}
+
+            // Iterate in reverse (newest first) to find the final report
+            for (let i = candidateContainers.length - 1; i >= 0; i--) {{
+                const container = candidateContainers[i];
+                if (isPlan(container) || isProgressOnly(container)) {{
+                    continue;
+                }}
+                const md = nodeToMarkdown(container).trim();
+                if (md.length > 200 && !md.toLowerCase().includes('iniciar pesquisa') && !md.toLowerCase().includes('aqui está meu plano')) {{
+                    return md;
+                }}
+            }}
+
+            return null;
         }})()"#
     )
 }
@@ -583,5 +786,12 @@ mod tests {
 
         let extract_new_js = extract_new_response_markdown_js(2);
         assert!(extract_new_js.contains("initialCount = 2"));
+
+        let progress_js = get_research_progress_js();
+        assert!(progress_js.contains(".current-step"));
+
+        let report_js = extract_research_report_js(1);
+        assert!(report_js.contains("isPlan"));
+        assert!(report_js.contains("isProgressOnly"));
     }
 }

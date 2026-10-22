@@ -11,22 +11,22 @@ cargo build --release
 ./target/release/gemini-axi gem --id <id> "<prompt>"
 ```
 
-Use `gemini-axi` below when installed on PATH, or substitute `./target/release/gemini-axi`. Global `--cdp <url>` / `GEMINI_AXI_CDP` override the browser endpoint; `--verbose` logs diagnostics to stderr. `-v`, `-V` and `--version` print only the version, without connecting to Chrome.
+Use `gemini-axi` below when installed on PATH, or substitute `./target/release/gemini-axi`. Next-step hints omit the default endpoint and retain a custom endpoint when needed. Global `--cdp <url>` / `GEMINI_AXI_CDP` override the browser endpoint; `--verbose` logs diagnostics to stderr. `-v`, `-V` and `--version` print only the version, without connecting to Chrome.
 
 ## Output contract
 
-Stdout contains TOON for data, errors, help and next steps. Internal browser and response data stay typed; serialization happens at the output boundary. Progress and diagnostics go to stderr. The encoder supports the CLI's object, scalar, scalar-array and uniform flat-table schemas; string values are quoted with TOON escapes to preserve arbitrary Markdown safely.
+Stdout contains TOON for data, errors, help and next steps. Internal browser and response data stay typed; serialization happens at the output boundary. Progress and diagnostics go to stderr. The encoder supports the CLI's object, scalar, scalar-array and uniform flat-table schemas; keys and string values follow TOON §7 canonical quoting: simple keys and unambiguous strings stay bare; delimiters, type-like strings and control characters are quoted and escaped to preserve Markdown safely.
 
 For example:
 
 ```toon
-"result":
-  "chars": 7
-  "conversation": "https://gemini.google.com/app/<id>"
-  "model": "Argon"
-  "response": "OK AXI."
-  "truncated": false
-"help"[1]: "gemini-axi --cdp 'http://127.0.0.1:9333' gem"
+result:
+  chars: 7
+  conversation: "https://gemini.google.com/app/<id>"
+  model: Argon
+  response: OK AXI.
+  truncated: false
+help[1]: gemini-axi gem
 ```
 
 Responses preview the first **1000 Unicode characters** by default and include the total `chars` count and `truncated` status. `--full` prints the complete response. `-o <file>` always saves complete Markdown, while stdout still includes a preview and metadata. Choose `--full` or `-o` on the initial request: repeating a chat sends another prompt. A truncated response suggests reading the saved file when available.

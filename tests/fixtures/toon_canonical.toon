@@ -1,0 +1,21 @@
+bin: ~/.local/bin/gemini-axi
+browser: reachable
+models[4]: 3.5 Flash Lite,3.8 Flash,3.1 Pro,4 Argon
+values:
+  comma: "a,b"
+  colon: "a:b"
+  boolean: "true"
+  number: "123"
+  empty: ""
+  leadingZero: "05"
+  exponent: "1e-6"
+  whitespace: " leading and trailing "
+  quote: "say \"hello\""
+  markdown: "# Heading\n\nText 🦀"
+  plain: Hello 世界 🦀
+gems[2]{id,name}:
+  alpha,Simple Gem
+  "123","A, Gem"
+"my-key":
+  user.name: João
+  "white space": safe

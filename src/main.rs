@@ -32,6 +32,8 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    gemini_axi::cdp::ensure_cdp_reachable(&cli.cdp, cli.is_explicit_cdp()).await?;
+
     match cli.command {
         Command::Chat(args) => handle_chat(&cli.cdp, args).await,
         Command::Research(args) => handle_research(&cli.cdp, args).await,
@@ -43,12 +45,24 @@ async fn handle_chat(cdp: &str, args: ChatArgs) -> Result<()> {
     let prompt = args.resolve_prompt()?;
     let timeout = Duration::from_secs(args.timeout);
 
-    let driver =
-        GeminiDriver::connect_and_prepare(cdp, Some(BASE_APP_URL), Duration::from_secs(30)).await?;
+    let driver = GeminiDriver::connect_and_prepare(cdp, None, Duration::from_secs(30)).await?;
 
-    let response = driver
+    let res = driver
         .run_chat(&prompt, args.model.as_deref(), timeout)
-        .await?;
+        .await;
+
+    let conv_url = driver
+        .client()
+        .evaluate_string("window.location.href")
+        .await
+        .unwrap_or(None)
+        .unwrap_or_default();
+    if conv_url.contains("gemini.google.com/app/") {
+        eprintln!("info: conversation created: {conv_url}");
+    }
+
+    let _ = driver.close().await;
+    let response = res?;
 
     if let Some(ref out_path) = args.output {
         write_output_file(out_path, &response)?;
@@ -67,10 +81,22 @@ async fn handle_research(cdp: &str, args: ResearchArgs) -> Result<()> {
     let prompt = args.resolve_prompt()?;
     let timeout = Duration::from_secs(args.timeout);
 
-    let driver =
-        GeminiDriver::connect_and_prepare(cdp, Some(BASE_APP_URL), Duration::from_secs(30)).await?;
+    let driver = GeminiDriver::connect_and_prepare(cdp, None, Duration::from_secs(30)).await?;
 
-    let dossier = driver.run_research(&prompt, timeout).await?;
+    let res = driver.run_research(&prompt, timeout).await;
+
+    let conv_url = driver
+        .client()
+        .evaluate_string("window.location.href")
+        .await
+        .unwrap_or(None)
+        .unwrap_or_default();
+    if conv_url.contains("gemini.google.com/app/") {
+        eprintln!("info: conversation created: {conv_url}");
+    }
+
+    let _ = driver.close().await;
+    let dossier = res?;
 
     write_output_file(&args.output, &dossier)?;
     println!("{}", args.output.display());
@@ -85,7 +111,20 @@ async fn handle_gem(cdp: &str, args: GemArgs) -> Result<()> {
     let driver =
         GeminiDriver::connect_and_prepare(cdp, Some(BASE_APP_URL), Duration::from_secs(30)).await?;
 
-    let response = driver.run_gem(&args.id, &prompt, timeout).await?;
+    let res = driver.run_gem(&args.id, &prompt, timeout).await;
+
+    let conv_url = driver
+        .client()
+        .evaluate_string("window.location.href")
+        .await
+        .unwrap_or(None)
+        .unwrap_or_default();
+    if conv_url.contains("gemini.google.com/app/") {
+        eprintln!("info: conversation created: {conv_url}");
+    }
+
+    let _ = driver.close().await;
+    let response = res?;
 
     if let Some(ref out_path) = args.output {
         write_output_file(out_path, &response)?;

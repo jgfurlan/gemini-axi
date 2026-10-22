@@ -15,6 +15,12 @@ pub enum AxiError {
     #[error("timeout after {0}s waiting for {1}")]
     Timeout(u64, String),
 
+    #[error("generation did not start within {0}s")]
+    GenerationDidNotStart(u64),
+
+    #[error("prompt was not submitted to conversation DOM: {0}")]
+    PromptNotSubmitted(String),
+
     #[error("element not found: {0}")]
     ElementNotFound(String),
 

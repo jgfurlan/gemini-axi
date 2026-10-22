@@ -24,12 +24,17 @@ pub const PROMPT_INPUT_SELECTORS: &[&str] = &[
 
 /// Selectors for the Send / Submit prompt button.
 pub const SEND_BUTTON_SELECTORS: &[&str] = &[
+    "button[aria-label*=\"Enviar mensagem\" i]",
+    "button[aria-label*=\"Send message\" i]",
+    "button[aria-label*=\"Enviar prompt\" i]",
+    "button[aria-label*=\"Send prompt\" i]",
     "button[aria-label*=\"Enviar\" i]",
     "button[aria-label*=\"Send\" i]",
-    "gem-icon-button.send-button button",
-    "button.send-button",
-    ".send-button button",
+    "gem-icon-button.send-button.has-input button",
+    "gem-icon-button.send-button.submit button",
+    ".send-button.has-input button",
     "button[data-test-id=\"send-button\"]",
+    ".send-button button",
 ];
 
 /// Selectors for the Stop Response button or active streaming spinner.
@@ -185,6 +190,7 @@ pub fn insert_prompt_js(prompt: &str) -> String {
 }
 
 /// Generates a JS expression to click the send button.
+/// Skips dictation/microphone buttons to avoid false triggers when editor is empty.
 pub fn click_send_js() -> String {
     let selectors_json = serde_json::to_string(SEND_BUTTON_SELECTORS).unwrap_or_default();
     format!(
@@ -193,7 +199,34 @@ pub fn click_send_js() -> String {
             for (const sel of selectors) {{
                 const el = document.querySelector(sel);
                 if (el && !el.disabled) {{
-                    el.click();
+                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    if (!aria.includes('ditar') && !aria.includes('dictate')) {{
+                        el.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true }}));
+                        el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}));
+                        el.dispatchEvent(new PointerEvent('pointerup', {{ bubbles: true }}));
+                        el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
+                        el.click();
+                        return true;
+                    }}
+                }}
+            }}
+            return false;
+        }})()"#
+    )
+}
+
+/// Generates a JS expression that checks if a user query containing the prompt text exists in DOM.
+pub fn is_prompt_in_dom_js(prompt: &str) -> String {
+    let prompt_json = serde_json::to_string(prompt).unwrap_or_default();
+    format!(
+        r#"(() => {{
+            const rawTarget = {prompt_json}.trim();
+            const normalize = s => (s || '').replace(/\s+/g, ' ').trim();
+            const targetText = normalize(rawTarget);
+            const queries = document.querySelectorAll('user-query, user-query-content, .user-query, [data-message-author-role="user"], .query-text');
+            for (const q of queries) {{
+                const text = normalize(q.innerText || q.textContent);
+                if (text.includes(targetText)) {{
                     return true;
                 }}
             }}
@@ -202,10 +235,41 @@ pub fn click_send_js() -> String {
     )
 }
 
+/// Generates a JS expression that counts the current number of model response containers in the DOM.
+pub fn count_model_responses_js() -> String {
+    let response_selectors_json =
+        serde_json::to_string(RESPONSE_CONTAINER_SELECTORS).unwrap_or_default();
+    format!(
+        r#"(() => {{
+            const selectors = {response_selectors_json};
+            for (const sel of selectors) {{
+                const matches = document.querySelectorAll(sel);
+                if (matches.length > 0) {{
+                    return matches.length;
+                }}
+            }}
+            return 0;
+        }})()"#
+    )
+}
+
+/// Generates a JS expression to check if Deep Research is currently enabled.
+pub fn is_deep_research_enabled_js() -> String {
+    r#"(() => {
+        const btn = document.querySelector('button[aria-label*="Desmarcar Deep Research" i], [data-test-id="deselect-drawer-item-gem-button"]');
+        if (btn) return true;
+        const textNodes = Array.from(document.querySelectorAll('.gem-button-content, .gds-body-m, [role="button"]'));
+        if (textNodes.some(n => (n.innerText || '').includes('Deep Research') && (n.closest('input-area-v2') || n.closest('.input-area')))) {
+            return true;
+        }
+        const activeButtons = Array.from(document.querySelectorAll('button[role="menuitemcheckbox"][aria-checked="true"]'));
+        return activeButtons.some(b => (b.innerText || '').includes('Deep Research'));
+    })()"#.to_string()
+}
+
 /// Generates a JS expression to check if Gemini is currently generating / streaming a response.
 pub fn is_streaming_js() -> String {
     let stop_selectors_json = serde_json::to_string(STOP_BUTTON_SELECTORS).unwrap_or_default();
-    let send_selectors_json = serde_json::to_string(SEND_BUTTON_SELECTORS).unwrap_or_default();
     format!(
         r#"(() => {{
             const stopSelectors = {stop_selectors_json};
@@ -219,12 +283,9 @@ pub fn is_streaming_js() -> String {
                     }}
                 }}
             }}
-            const sendSelectors = {send_selectors_json};
-            for (const sel of sendSelectors) {{
-                const el = document.querySelector(sel);
-                if (el && el.disabled) {{
-                    return true;
-                }}
+            const loaders = document.querySelectorAll('.gpi-static-text-loader, .sparkle-spinner, [aria-busy="true"].markdown');
+            for (const l of loaders) {{
+                if (l && (l.offsetWidth > 0 || l.offsetHeight > 0)) return true;
             }}
             return false;
         }})()"#
@@ -361,17 +422,19 @@ pub fn is_research_in_progress_js() -> String {
     )
 }
 
-/// Generates a JS expression to extract the latest model response formatted as clean Markdown.
-pub fn extract_response_markdown_js() -> String {
+/// Generates a JS expression to extract the latest model response that appeared AFTER initial_count,
+/// formatted as clean Markdown. Returns null if no new response is present.
+pub fn extract_new_response_markdown_js(initial_count: usize) -> String {
     let response_selectors_json =
         serde_json::to_string(RESPONSE_CONTAINER_SELECTORS).unwrap_or_default();
     format!(
         r#"(() => {{
+            const initialCount = {initial_count};
             const selectors = {response_selectors_json};
             let responseContainer = null;
             for (const sel of selectors) {{
                 const matches = document.querySelectorAll(sel);
-                if (matches.length > 0) {{
+                if (matches.length > initialCount) {{
                     responseContainer = matches[matches.length - 1];
                     break;
                 }}
@@ -470,6 +533,11 @@ pub fn extract_response_markdown_js() -> String {
     )
 }
 
+/// Generates a JS expression to extract the latest model response formatted as clean Markdown.
+pub fn extract_response_markdown_js() -> String {
+    extract_new_response_markdown_js(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +563,12 @@ mod tests {
         let insert_js = insert_prompt_js("Hello \"world\"\nNew line");
         assert!(insert_js.contains("Hello \\\"world\\\"\\nNew line"));
 
+        let prompt_verify_js = is_prompt_in_dom_js("Hello");
+        assert!(prompt_verify_js.contains("user-query"));
+
+        let count_js = count_model_responses_js();
+        assert!(count_js.contains("matches.length"));
+
         let send_js = click_send_js();
         assert!(send_js.contains("el.click()"));
 
@@ -506,5 +580,8 @@ mod tests {
 
         let extract_js = extract_response_markdown_js();
         assert!(extract_js.contains("nodeToMarkdown"));
+
+        let extract_new_js = extract_new_response_markdown_js(2);
+        assert!(extract_new_js.contains("initialCount = 2"));
     }
 }

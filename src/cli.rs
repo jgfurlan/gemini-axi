@@ -21,9 +21,9 @@ pub struct Cli {
     #[arg(
         long,
         env = "GEMINI_AXI_CDP",
-        default_value = "http://127.0.0.1:9222",
+        default_value = "http://127.0.0.1:9333",
         global = true,
-        help = "CDP endpoint (e.g. http://127.0.0.1:9222 or ws://...)"
+        help = "CDP endpoint (defaults to http://127.0.0.1:9333)"
     )]
     pub cdp: String,
 
@@ -33,6 +33,14 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+impl Cli {
+    /// Returns true if CDP was explicitly provided via --cdp or GEMINI_AXI_CDP.
+    pub fn is_explicit_cdp(&self) -> bool {
+        std::env::var("GEMINI_AXI_CDP").is_ok()
+            || std::env::args().any(|a| a == "--cdp" || a.starts_with("--cdp="))
+    }
 }
 
 #[derive(Subcommand, Debug)]

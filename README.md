@@ -39,7 +39,7 @@ Running multi-step research and architecture design directly inside frontier cod
   The LLM receives only the final file path or response text (< 80 tokens total).
 * **Deep Research Automation:** Triggers Gemini Deep Research runs, auto-approves research plans, monitors multi-step synthesis, and saves complete dossiers directly to disk.
 * **Direct Argon Chat & Custom Gems:** Converse with Gemini 2.0 / Argon models and custom domain Gems headlessly without API rate limits.
-* **Direct CDP WebSocket Bridge:** Communicates directly with Chrome's remote debugging port (`ws://127.0.0.1:9222`) over Tokio-Tungstenite with zero Electron or Node baggage.
+* **Direct CDP WebSocket Bridge:** Communicates directly with Chrome's remote debugging port (`http://127.0.0.1:9333`) over Tokio-Tungstenite with zero Electron or Node baggage.
 
 ---
 
@@ -61,7 +61,7 @@ gemini-axi gem --id "hypertrophy-physiologist" --input athlete-data.json
 
 ### Global Options
 
-* `--cdp <URL>`: Chrome DevTools Protocol endpoint URL (default: `http://127.0.0.1:9222`, env: `GEMINI_AXI_CDP`).
+* `--cdp <URL>`: Chrome DevTools Protocol endpoint URL (default: `http://127.0.0.1:9333`, env: `GEMINI_AXI_CDP`).
 * `-v, --verbose`: Enables debug logging on `stderr` (keeps `stdout` clean for agent consumption).
 * `-h, --help`: Prints short, focused command help.
 
@@ -84,58 +84,60 @@ gemini-axi gem --id "hypertrophy-physiologist" --input athlete-data.json
 
 ---
 
-## 🌐 Connecting to Chrome
+## 🌐 Connecting to Chrome: Dedicated Agents Chrome
 
-`gemini-axi` can connect to your everyday Chrome instance (already logged in with your Google account) **without needing a dedicated profile or restarting your browser**.
+`gemini-axi` connects by default to a dedicated Chrome instance running on port `9333` with profile `~/.agents-chrome`.
 
-### Method 1: Everyday Chrome via `chrome://inspect` (Recommended)
+### Why a Dedicated Chrome Instance?
 
-1. Open your standard Google Chrome browser where you are already signed in to Gemini.
-2. In the omnibox, navigate to:
-   ```text
-   chrome://inspect/#remote-debugging
-   ```
-3. Check the box **"Allow remote debugging for this browser instance"** (or in Portuguese: "Permitir a depuração remota para esta instância do navegador").
-4. Chrome will create a `DevToolsActivePort` file inside your user-data directory and start listening on loopback (default port `9222`).
-5. (macOS only): On the first connection, Chrome presents an approval dialog asking *"Allow remote debugging?"*. Click **"Allow"** (or run `browser-harness mac-approve`).
-6. Run any `gemini-axi` command without arguments:
-   ```bash
-   gemini-axi chat "teste gemini-axi: responda 'calibracao ok'"
-   ```
-   `gemini-axi` automatically scans standard profile directories (`Library/Application Support/Google/Chrome`, `~/.config/google-chrome`, `%LOCALAPPDATA%/Google/Chrome/User Data`), reads `DevToolsActivePort`, attaches to your active Gemini session via the browser WebSocket (`Target.attachToTarget`), and drives the conversation headlessly.
+1. **No Intrusive Permission Popups:** Chrome's default daily profile requires user authorization on every connection via an OS-level *"Allow remote debugging"* prompt. Dedicated debugging port `9333` with `--user-data-dir` uses standard DevTools protocol without continuous confirmation dialogs.
+2. **No Background Throttling:** Normal browsing aggressively throttles background and occluded tabs (pausing `requestAnimationFrame` and clamping timers to 1Hz), which stalls streaming AI responses. Starting with backgrounding disabled ensures reliable, unthrottled execution.
+3. **Total Isolation:** Keeps personal tabs, browsing history, and cookies completely separate from automated agents.
 
----
+### Step-by-Step Setup
 
-### Method 2: Dedicated Profile or Custom Endpoint (`--cdp`)
-
-If you prefer an isolated automation profile or run a headless Chrome on a remote machine:
-
-1. Launch Chrome with `--remote-debugging-port` and a dedicated `--user-data-dir`:
+1. **One-Time Startup & Login:**
+   Launch Chrome with the dedicated agents profile:
 
    **macOS:**
    ```bash
-   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-     --remote-debugging-port=9222 \
-     --user-data-dir="$HOME/.gemini-axi/chrome-profile"
+   open -na "Google Chrome" --args \
+     --user-data-dir="$HOME/.agents-chrome" \
+     --remote-debugging-port=9333 \
+     --no-first-run \
+     --no-default-browser-check \
+     --disable-renderer-backgrounding \
+     --disable-backgrounding-occluded-windows \
+     --disable-background-timer-throttling
    ```
 
    **Linux:**
    ```bash
    google-chrome \
-     --remote-debugging-port=9222 \
-     --user-data-dir="$HOME/.gemini-axi/chrome-profile"
+     --user-data-dir="$HOME/.agents-chrome" \
+     --remote-debugging-port=9333 \
+     --no-first-run \
+     --no-default-browser-check \
+     --disable-renderer-backgrounding \
+     --disable-backgrounding-occluded-windows \
+     --disable-background-timer-throttling &
    ```
 
-   **Windows:**
-   ```cmd
-   chrome.exe --remote-debugging-port=9222 --user-data-dir="%LOCALAPPDATA%\gemini-axi\chrome-profile"
-   ```
+2. **Log into Google Gemini:**
+   In that newly opened Chrome window, navigate to `https://gemini.google.com` and sign in once. Your session and cookies remain saved in `~/.agents-chrome`.
 
-2. Sign in once at `https://gemini.google.com`. Credentials remain saved in the directory.
-3. Pass `--cdp` (or set `GEMINI_AXI_CDP`):
+3. **Run `gemini-axi`:**
+   Simply run commands without extra flags:
    ```bash
-   gemini-axi --cdp http://127.0.0.1:9222 chat "Hello Gemini"
+   gemini-axi chat "Hello Gemini"
    ```
+
+   * **Auto-Launch:** If Chrome is not running when `gemini-axi` executes with default options, `gemini-axi` automatically spawns the agents Chrome instance with the appropriate flags and waits for port 9333 to respond.
+   * **Custom Endpoint:** If using an existing CDP endpoint or remote runner, specify `--cdp`:
+     ```bash
+     gemini-axi --cdp http://127.0.0.1:9222 chat "Hello Gemini"
+     ```
+     When `--cdp` is explicitly supplied, `gemini-axi` connects directly without attempting to launch any browser.
 
 ---
 

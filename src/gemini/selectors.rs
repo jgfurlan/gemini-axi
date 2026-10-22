@@ -1,10 +1,7 @@
 //! Gemini Web App DOM Selectors, UI Strings, and Evaluation Snippets.
 //!
-//! NOTE FOR LIVE CALIBRATION:
-//! Gemini's web frontend is an Angular/Material application with custom components (`<rich-textarea>`,
-//! `<model-response>`, etc.). The selectors below are heuristics based on the current web app structure.
-//! During live calibration with an active Google session, inspect the live DOM to verify or refine
-//! these selectors if Google updates class names or ARIA labels.
+//! Calibrated against live Google Gemini web frontend (Angular / Material UI components).
+//! Uses stable ARIA labels, roles, and data-test-id attributes ahead of generated CSS classes.
 
 /// Base URL for the Gemini Web App.
 pub const BASE_APP_URL: &str = "https://gemini.google.com/app";
@@ -16,69 +13,71 @@ pub const GEM_URL_PREFIX: &str = "https://gemini.google.com/gems/";
 pub const GEM_URL_APP_PREFIX: &str = "https://gemini.google.com/app/gems/";
 
 /// Selectors for locating the prompt input textbox.
-/// (Heuristic - calibrate live if editor component structure changes)
 pub const PROMPT_INPUT_SELECTORS: &[&str] = &[
     "rich-textarea .ql-editor[contenteditable=\"true\"]",
-    "rich-textarea div[contenteditable=\"true\"]",
+    "rich-textarea div[contenteditable=\"true\"][role=\"textbox\"]",
+    "div[contenteditable=\"true\"][role=\"textbox\"][aria-label*=\"Gemini\" i]",
     "div[contenteditable=\"true\"][role=\"textbox\"]",
-    "textarea[aria-label*=\"prompt\" i]",
-    "textarea[aria-label*=\"pergunta\" i]",
-    "div.ql-editor",
+    "rich-textarea div[contenteditable=\"true\"]",
     "textarea",
 ];
 
 /// Selectors for the Send / Submit prompt button.
-/// (Heuristic - calibrate live)
 pub const SEND_BUTTON_SELECTORS: &[&str] = &[
-    "button.send-button",
     "button[aria-label*=\"Enviar\" i]",
     "button[aria-label*=\"Send\" i]",
-    "button[mat-icon-button][aria-label*=\"prompt\" i]",
-    ".send-button-container button",
+    "gem-icon-button.send-button button",
+    "button.send-button",
+    ".send-button button",
     "button[data-test-id=\"send-button\"]",
 ];
 
 /// Selectors for the Stop Response button or active streaming spinner.
 /// When any of these exist or are visible, generation is considered in progress.
-/// (Heuristic - calibrate live)
 pub const STOP_BUTTON_SELECTORS: &[&str] = &[
+    "button[aria-label*=\"Parar resposta\" i]",
+    "button[aria-label*=\"Stop response\" i]",
     "button[aria-label*=\"Parar\" i]",
     "button[aria-label*=\"Stop\" i]",
+    "gem-icon-button.stop-button button",
     "button.stop-button",
-    "button[aria-label*=\"Cancelar\" i]",
-    ".sparkle-spinner",
+    ".stop-button button",
+    "mat-progress-spinner",
     "mat-progress-bar",
 ];
 
 /// Selectors for opening the model picker dropdown (e.g. for Argon, Pro, Flash).
-/// (Heuristic - calibrate live)
 pub const MODEL_PICKER_TRIGGER_SELECTORS: &[&str] = &[
-    "button[aria-label*=\"Model\" i]",
-    "button[aria-label*=\"Modelo\" i]",
+    "button[data-test-id=\"bard-mode-menu-button\"]",
+    "[data-test-id=\"bard-mode-menu-button\"]",
+    "button[aria-label*=\"seletor de modo\" i]",
+    "button[aria-label*=\"mode\" i]",
+    "button.input-area-switch",
     "[data-test-id=\"model-selector\"]",
     ".model-picker-button",
-    ".bard-mode-menu-trigger",
 ];
 
 /// Selectors for options inside the model picker dropdown menu.
-/// (Heuristic - calibrate live)
 pub const MODEL_OPTION_SELECTORS: &[&str] = &[
     "[role=\"menuitem\"]",
+    "gem-menu-item[data-mode-id]",
+    "gem-menu-item[data-test-id^=\"bard-mode-option\"]",
+    "gem-menu-item",
+    "[role=\"menuitemradio\"]",
     "mat-option",
     ".model-option",
-    "div[data-model-id]",
 ];
 
 /// Selectors for triggering or toggling Deep Research mode.
-/// (Heuristic - calibrate live)
 pub const DEEP_RESEARCH_TRIGGER_SELECTORS: &[&str] = &[
     "button[aria-label*=\"Deep Research\" i]",
     "button[aria-label*=\"Pesquisa profunda\" i]",
+    "button[aria-label*=\"Pesquisa aprofundada\" i]",
     "[data-test-id=\"deep-research-toggle\"]",
+    ".deep-research-toggle",
 ];
 
 /// Selectors for the Deep Research plan container.
-/// (Heuristic - calibrate live)
 pub const DEEP_RESEARCH_PLAN_SELECTORS: &[&str] = &[
     ".research-plan",
     "[data-test-id=\"research-plan\"]",
@@ -87,16 +86,15 @@ pub const DEEP_RESEARCH_PLAN_SELECTORS: &[&str] = &[
 ];
 
 /// Selectors for the button to approve / start the research plan.
-/// (Heuristic - calibrate live)
 pub const DEEP_RESEARCH_APPROVE_BUTTON_SELECTORS: &[&str] = &[
     "button[aria-label*=\"Start research\" i]",
     "button[aria-label*=\"Iniciar pesquisa\" i]",
     "button[aria-label*=\"Aprovar\" i]",
     "button[data-test-id=\"start-research-button\"]",
+    "button[data-test-id=\"approve-plan-button\"]",
 ];
 
 /// Selectors for Deep Research active progress indicator.
-/// (Heuristic - calibrate live)
 pub const DEEP_RESEARCH_PROGRESS_SELECTORS: &[&str] = &[
     ".research-progress",
     ".research-step",
@@ -104,18 +102,21 @@ pub const DEEP_RESEARCH_PROGRESS_SELECTORS: &[&str] = &[
 ];
 
 /// Selectors for the model's response container.
-/// (Heuristic - calibrate live)
 pub const RESPONSE_CONTAINER_SELECTORS: &[&str] = &[
-    ".model-response-text",
+    "message-content .markdown",
     "message-content",
+    ".model-response-text message-content",
+    "model-response message-content",
+    ".model-response-text",
     "model-response",
     ".response-container",
     "div[data-message-author-role=\"model\"]",
 ];
 
 /// Selectors for the Copy Response Markdown / Text button.
-/// (Heuristic - calibrate live)
 pub const COPY_BUTTON_SELECTORS: &[&str] = &[
+    "button[aria-label*=\"Copiar resposta\" i]",
+    "button[aria-label*=\"Copiar comando\" i]",
     "button[aria-label*=\"Copiar\" i]",
     "button[aria-label*=\"Copy\" i]",
     "button[data-test-id=\"copy-button\"]",
@@ -139,6 +140,7 @@ pub fn is_app_ready_js() -> String {
 }
 
 /// Generates a JS expression that sets prompt text into the active prompt editor and triggers input events.
+/// Avoids TrustedHTML violations on live Gemini by utilizing Quill editor API or execCommand.
 pub fn insert_prompt_js(prompt: &str) -> String {
     let prompt_json = serde_json::to_string(prompt).unwrap_or_default();
     let selectors_json = serde_json::to_string(PROMPT_INPUT_SELECTORS).unwrap_or_default();
@@ -161,11 +163,22 @@ pub fn insert_prompt_js(prompt: &str) -> String {
                 target.value = text;
                 target.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 target.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            }} else {{
-                // Contenteditable / Quill editor
-                target.innerHTML = '<p>' + text.replace(/\n/g, '<br>') + '</p>';
-                target.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                return true;
             }}
+
+            // Contenteditable / Quill editor
+            const rich = target.closest('rich-textarea');
+            if (rich && rich.__quill) {{
+                rich.__quill.setText(text);
+                rich.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                rich.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            }} else {{
+                document.execCommand('selectAll', false, null);
+                document.execCommand('delete', false, null);
+                document.execCommand('insertText', false, text);
+            }}
+            target.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: text }}));
+            target.dispatchEvent(new Event('change', {{ bubbles: true }}));
             return true;
         }})()"#
     )
@@ -197,9 +210,13 @@ pub fn is_streaming_js() -> String {
         r#"(() => {{
             const stopSelectors = {stop_selectors_json};
             for (const sel of stopSelectors) {{
-                const el = document.querySelector(sel);
-                if (el && (el.offsetWidth > 0 || el.offsetHeight > 0)) {{
-                    return true;
+                const matches = document.querySelectorAll(sel);
+                for (const el of matches) {{
+                    if (el && (el.offsetWidth > 0 || el.offsetHeight > 0)) {{
+                        if (!el.closest('bard-sidenav, side-navigation-v2')) {{
+                            return true;
+                        }}
+                    }}
                 }}
             }}
             const sendSelectors = {send_selectors_json};
@@ -321,14 +338,24 @@ pub fn is_research_in_progress_js() -> String {
         r#"(() => {{
             const progressSelectors = {progress_selectors_json};
             for (const sel of progressSelectors) {{
-                const el = document.querySelector(sel);
-                if (el && (el.offsetWidth > 0 || el.offsetHeight > 0)) {{
-                    return true;
+                const matches = document.querySelectorAll(sel);
+                for (const el of matches) {{
+                    if (el && (el.offsetWidth > 0 || el.offsetHeight > 0)) {{
+                        if (!el.closest('bard-sidenav, side-navigation-v2')) {{
+                            return true;
+                        }}
+                    }}
                 }}
             }}
-            // Check for progress indicators or spinners
+            // Check for progress indicators or spinners inside main chat area
             const spinners = document.querySelectorAll('mat-progress-bar, mat-progress-spinner, .sparkle-spinner');
-            if (spinners.length > 0) return true;
+            for (const s of spinners) {{
+                if (s && (s.offsetWidth > 0 || s.offsetHeight > 0)) {{
+                    if (!s.closest('bard-sidenav, side-navigation-v2')) {{
+                        return true;
+                    }}
+                }}
+            }}
             return false;
         }})()"#
     )

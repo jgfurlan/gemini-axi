@@ -2,7 +2,7 @@ use std::time::Duration;
 use tracing::{debug, info};
 
 use super::selectors::*;
-use crate::cdp::{CdpClient, discover_target};
+use crate::cdp::CdpClient;
 use crate::error::{AxiError, Result};
 
 /// High-level automation driver for the Gemini Web App.
@@ -23,10 +23,9 @@ impl GeminiDriver {
         preferred_url: Option<&str>,
         ready_timeout: Duration,
     ) -> Result<Self> {
-        let ws_url = discover_target(cdp_endpoint, preferred_url).await?;
-        debug!(ws_url = %ws_url, "Connected to Chrome target");
+        let client = CdpClient::connect_to_target(cdp_endpoint, preferred_url).await?;
+        debug!("Connected to Chrome target");
 
-        let client = CdpClient::connect(&ws_url).await?;
         client.enable_standard_domains().await?;
 
         let driver = Self::new(client);
@@ -109,6 +108,33 @@ impl GeminiDriver {
         }
 
         tokio::time::sleep(Duration::from_millis(150)).await;
+
+        // Check if send button is ready; if not, type a space via CDP Input.insertText
+        // to guarantee native event activation on live Gemini Web App
+        let send_check_js = r#"(() => {
+            const selectors = [
+                "button[aria-label*=\"Enviar\" i]",
+                "button[aria-label*=\"Send\" i]",
+                "gem-icon-button.send-button button",
+                "button.send-button",
+                ".send-button button"
+            ];
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                if (el && !el.disabled) return true;
+            }
+            return false;
+        })()"#;
+
+        if !self
+            .client
+            .evaluate_bool(send_check_js)
+            .await
+            .unwrap_or(false)
+        {
+            let _ = self.client.insert_text(" ").await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
 
         debug!("Clicking send button");
         let send_js = click_send_js();

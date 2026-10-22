@@ -8,8 +8,10 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, trace, warn};
 
+use super::discovery::{discover_target_http, find_devtools_active_port, normalize_http_url};
 use super::types::{CdpRequest, CdpResponse, EvaluateResult};
 use crate::error::{AxiError, Result};
+use crate::gemini::selectors::BASE_APP_URL;
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value>>>>>;
 
@@ -19,6 +21,7 @@ pub struct CdpClient {
     next_id: Arc<AtomicU64>,
     write_tx: mpsc::Sender<Message>,
     pending: PendingMap,
+    session_id: Option<String>,
 }
 
 impl CdpClient {
@@ -28,7 +31,16 @@ impl CdpClient {
 
         let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url)
             .await
-            .map_err(|e| AxiError::WebSocket(format!("failed to connect to {ws_url}: {e}")))?;
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("403") {
+                    AxiError::WebSocket(format!(
+                        "permission blocked: Chrome is reachable, but the 'Allow remote debugging' popup has not been approved in Chrome. Click 'Allow' in Chrome (or run 'browser-harness mac-approve') and retry ({e})"
+                    ))
+                } else {
+                    AxiError::WebSocket(format!("failed to connect to {ws_url}: {e}"))
+                }
+            })?;
 
         let (mut write_half, mut read_half) = ws_stream.split();
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
@@ -104,7 +116,157 @@ impl CdpClient {
             next_id: Arc::new(AtomicU64::new(1)),
             write_tx,
             pending,
+            session_id: None,
         })
+    }
+
+    /// Returns a new CdpClient sharing the same underlying WebSocket connection,
+    /// but scoped to a specific session ID (flat CDP mode).
+    pub fn with_session(&self, session_id: impl Into<String>) -> Self {
+        Self {
+            next_id: self.next_id.clone(),
+            write_tx: self.write_tx.clone(),
+            pending: self.pending.clone(),
+            session_id: Some(session_id.into()),
+        }
+    }
+
+    /// Returns the active session ID, if any.
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    /// Connects to a Chrome browser-level WebSocket and attaches to a matching page target
+    /// using flat session mode (`Target.attachToTarget`).
+    pub async fn connect_browser_target(
+        browser_ws: &str,
+        preferred_url: Option<&str>,
+    ) -> Result<Self> {
+        debug!(browser_ws = %browser_ws, "Connecting to browser WebSocket");
+        let client = Self::connect(browser_ws).await?;
+        let match_url = preferred_url.unwrap_or("gemini.google.com");
+
+        let val = client
+            .call("Target.getTargets", serde_json::json!({}))
+            .await?;
+        let targets = val
+            .get("targetInfos")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut target_id = None;
+        for t in &targets {
+            let t_type = t.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+            let t_url = t.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+            if t_type == "page"
+                && t_url.contains(match_url)
+                && let Some(id) = t.get("targetId").and_then(|v| v.as_str())
+            {
+                debug!(id = %id, url = %t_url, "Found matching target via Target.getTargets");
+                target_id = Some(id.to_string());
+                break;
+            }
+        }
+
+        if target_id.is_none() {
+            let target_url = preferred_url.unwrap_or(BASE_APP_URL);
+            debug!(url = %target_url, "Creating new tab via Target.createTarget");
+            let create_res = client
+                .call(
+                    "Target.createTarget",
+                    serde_json::json!({ "url": target_url }),
+                )
+                .await?;
+            if let Some(id) = create_res.get("targetId").and_then(|v| v.as_str()) {
+                target_id = Some(id.to_string());
+            }
+        }
+
+        if target_id.is_none() {
+            for t in &targets {
+                let t_type = t.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+                if t_type == "page"
+                    && let Some(id) = t.get("targetId").and_then(|v| v.as_str())
+                {
+                    debug!(id = %id, "Reusing first available page target");
+                    target_id = Some(id.to_string());
+                    break;
+                }
+            }
+        }
+
+        let tid = target_id.ok_or_else(|| AxiError::TabNotFound(match_url.to_string()))?;
+        let attach_res = client
+            .call(
+                "Target.attachToTarget",
+                serde_json::json!({ "targetId": tid, "flatten": true }),
+            )
+            .await?;
+
+        let session_id = attach_res
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AxiError::Other("missing sessionId from Target.attachToTarget".into())
+            })?;
+
+        debug!(
+            target_id = %tid,
+            session_id = %session_id,
+            "Attached to target session via browser WebSocket"
+        );
+        Ok(client.with_session(session_id))
+    }
+
+    /// Discovers target page and connects, seamlessly handling both HTTP targets
+    /// and browser-level `DevToolsActivePort` endpoints.
+    pub async fn connect_to_target(
+        cdp_endpoint: &str,
+        preferred_url: Option<&str>,
+    ) -> Result<Self> {
+        let endpoint = cdp_endpoint.trim();
+        if endpoint.starts_with("ws://") || endpoint.starts_with("wss://") {
+            if endpoint.contains("/devtools/browser/") {
+                return Self::connect_browser_target(endpoint, preferred_url).await;
+            } else {
+                return Self::connect(endpoint).await;
+            }
+        }
+
+        // Try HTTP target discovery first (e.g. mock server or non-restricted profile)
+        match discover_target_http(endpoint, preferred_url).await {
+            Ok(page_ws) => {
+                debug!(ws_url = %page_ws, "Connected to Chrome target via HTTP discovery");
+                Self::connect(&page_ws).await
+            }
+            Err(e) => {
+                // If HTTP failed or returned 404, check DevToolsActivePort for daily Chrome
+                let http_base = normalize_http_url(endpoint);
+                let endpoint_url = url::Url::parse(&http_base).ok();
+                let requested_port = endpoint_url.as_ref().and_then(|u| u.port());
+                let is_localhost = endpoint_url
+                    .as_ref()
+                    .map(|u| u.host_str() == Some("127.0.0.1") || u.host_str() == Some("localhost"))
+                    .unwrap_or(false);
+
+                if is_localhost
+                    && let Some((active_port, ws_path)) = find_devtools_active_port()
+                    && (requested_port == Some(active_port)
+                        || requested_port == Some(9222)
+                        || requested_port.is_none())
+                {
+                    let browser_ws = format!("ws://127.0.0.1:{active_port}{ws_path}");
+                    debug!(
+                        active_port = active_port,
+                        "Connecting via DevToolsActivePort browser WebSocket"
+                    );
+                    return Self::connect_browser_target(&browser_ws, preferred_url).await;
+                }
+
+                Err(e)
+            }
+        }
     }
 
     /// Invokes a CDP method with parameters and a default 30-second timeout.
@@ -125,6 +287,7 @@ impl CdpClient {
             id,
             method: method.to_string(),
             params,
+            session_id: self.session_id.clone(),
         };
 
         let req_json = serde_json::to_string(&req)?;
@@ -197,6 +360,13 @@ impl CdpClient {
     pub async fn navigate(&self, url: &str) -> Result<()> {
         let params = serde_json::json!({ "url": url });
         self.call("Page.navigate", params).await?;
+        Ok(())
+    }
+
+    /// Enters text using CDP Input.insertText.
+    pub async fn insert_text(&self, text: &str) -> Result<()> {
+        let params = serde_json::json!({ "text": text });
+        self.call("Input.insertText", params).await?;
         Ok(())
     }
 

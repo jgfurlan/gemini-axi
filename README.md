@@ -84,37 +84,58 @@ gemini-axi gem --id "hypertrophy-physiologist" --input athlete-data.json
 
 ---
 
-## 🌐 Chrome Setup with Remote Debugging
+## 🌐 Connecting to Chrome
 
-Recent versions of Google Chrome ignore `--remote-debugging-port` when launched against the default user profile while another Chrome instance is running.
-To enable headless automation with your authenticated Google account, launch Chrome with a dedicated `--user-data-dir`.
+`gemini-axi` can connect to your everyday Chrome instance (already logged in with your Google account) **without needing a dedicated profile or restarting your browser**.
 
-### 1. Launch Chrome with Debugging Port and Dedicated Profile
+### Method 1: Everyday Chrome via `chrome://inspect` (Recommended)
 
-On macOS:
-```bash
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --remote-debugging-port=9222 \
-  --user-data-dir="$HOME/.gemini-axi/chrome-profile"
-```
+1. Open your standard Google Chrome browser where you are already signed in to Gemini.
+2. In the omnibox, navigate to:
+   ```text
+   chrome://inspect/#remote-debugging
+   ```
+3. Check the box **"Allow remote debugging for this browser instance"** (or in Portuguese: "Permitir a depuração remota para esta instância do navegador").
+4. Chrome will create a `DevToolsActivePort` file inside your user-data directory and start listening on loopback (default port `9222`).
+5. (macOS only): On the first connection, Chrome presents an approval dialog asking *"Allow remote debugging?"*. Click **"Allow"** (or run `browser-harness mac-approve`).
+6. Run any `gemini-axi` command without arguments:
+   ```bash
+   gemini-axi chat "teste gemini-axi: responda 'calibracao ok'"
+   ```
+   `gemini-axi` automatically scans standard profile directories (`Library/Application Support/Google/Chrome`, `~/.config/google-chrome`, `%LOCALAPPDATA%/Google/Chrome/User Data`), reads `DevToolsActivePort`, attaches to your active Gemini session via the browser WebSocket (`Target.attachToTarget`), and drives the conversation headlessly.
 
-On Linux:
-```bash
-google-chrome \
-  --remote-debugging-port=9222 \
-  --user-data-dir="$HOME/.gemini-axi/chrome-profile"
-```
+---
 
-On Windows:
-```cmd
-chrome.exe --remote-debugging-port=9222 --user-data-dir="%LOCALAPPDATA%\gemini-axi\chrome-profile"
-```
+### Method 2: Dedicated Profile or Custom Endpoint (`--cdp`)
 
-### 2. Sign In Once
+If you prefer an isolated automation profile or run a headless Chrome on a remote machine:
 
-Open `https://gemini.google.com` in the dedicated Chrome window and sign in to your Google account.
-Your session cookies and credentials remain persisted inside `--user-data-dir`.
-All subsequent `gemini-axi` commands connect to that running Chrome instance without prompting for authentication.
+1. Launch Chrome with `--remote-debugging-port` and a dedicated `--user-data-dir`:
+
+   **macOS:**
+   ```bash
+   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+     --remote-debugging-port=9222 \
+     --user-data-dir="$HOME/.gemini-axi/chrome-profile"
+   ```
+
+   **Linux:**
+   ```bash
+   google-chrome \
+     --remote-debugging-port=9222 \
+     --user-data-dir="$HOME/.gemini-axi/chrome-profile"
+   ```
+
+   **Windows:**
+   ```cmd
+   chrome.exe --remote-debugging-port=9222 --user-data-dir="%LOCALAPPDATA%\gemini-axi\chrome-profile"
+   ```
+
+2. Sign in once at `https://gemini.google.com`. Credentials remain saved in the directory.
+3. Pass `--cdp` (or set `GEMINI_AXI_CDP`):
+   ```bash
+   gemini-axi --cdp http://127.0.0.1:9222 chat "Hello Gemini"
+   ```
 
 ---
 

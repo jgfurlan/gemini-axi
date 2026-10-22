@@ -46,9 +46,15 @@ impl GeminiDriver {
             .await
             .unwrap_or(0);
 
-        if !current_href.contains("gemini.google.com")
-            || (preferred_url.is_none() && (current_href != BASE_APP_URL || query_count > 0))
-        {
+        let need_nav = if preferred_url.is_some() {
+            normalize_url(&current_href) != normalize_url(target_url)
+        } else {
+            !current_href.contains("gemini.google.com")
+                || normalize_url(&current_href) != normalize_url(BASE_APP_URL)
+                || query_count > 0
+        };
+
+        if need_nav {
             debug!(
                 current = %current_href,
                 target = %target_url,
@@ -59,6 +65,9 @@ impl GeminiDriver {
         }
 
         driver.wait_until_ready(ready_timeout).await?;
+        if preferred_url.is_some() {
+            wait_for_conversation_hydration(&driver.client, ready_timeout).await?;
+        }
         driver.client.ensure_active_and_focused().await?;
         Ok(driver)
     }
@@ -301,54 +310,52 @@ impl GeminiDriver {
         initial_response_count: usize,
         timeout: Duration,
     ) -> Result<String> {
+        wait_for_new_model_response(&self.client, initial_response_count, timeout).await
+    }
+
+    /// Executes a chat prompt, optionally continuing an existing conversation by URL,
+    /// selecting a model, and returning the response Markdown.
+    pub async fn execute_chat(
+        &self,
+        prompt: &str,
+        conversation_url: Option<&str>,
+        model: Option<&str>,
+        timeout: Duration,
+    ) -> Result<String> {
+        let target_url = conversation_url.unwrap_or(BASE_APP_URL);
+        let current_href = self
+            .client
+            .evaluate_string("window.location.href")
+            .await?
+            .unwrap_or_default();
+
+        if normalize_url(&current_href) != normalize_url(target_url) {
+            debug!(
+                current = %current_href,
+                target = %target_url,
+                "Current tab not on target conversation; navigating"
+            );
+            self.client.navigate(target_url).await?;
+            self.wait_until_ready(Duration::from_secs(15)).await?;
+            if conversation_url.is_some() {
+                wait_for_conversation_hydration(&self.client, Duration::from_secs(15)).await?;
+            }
+        } else if conversation_url.is_some() {
+            wait_for_conversation_hydration(&self.client, Duration::from_secs(15)).await?;
+        }
+
+        if let Some(m) = model {
+            self.select_model(m, Duration::from_secs(5)).await?;
+        }
+
+        let initial_count = get_model_response_count(&self.client).await?;
         debug!(
-            initial_count = initial_response_count,
-            "Waiting for response generation to complete"
+            initial_count = initial_count,
+            "Recorded initial response count before prompt"
         );
-        let start = std::time::Instant::now();
 
-        // 1. Wait for generation to START (streaming active or new response element created)
-        let streaming_js = is_streaming_js();
-        let count_js = count_model_responses_js();
-        let start_timeout = Duration::from_secs(10);
-        let mut started = false;
-
-        while start.elapsed() < start_timeout {
-            let is_stream = self.client.evaluate_bool(&streaming_js).await?;
-            let current_count = self.client.evaluate_u64(&count_js).await? as usize;
-            if is_stream || current_count > initial_response_count {
-                started = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-
-        if !started {
-            return Err(AxiError::GenerationDidNotStart(start_timeout.as_secs()));
-        }
-
-        debug!(started = started, "Generation stream start confirmed");
-
-        // 2. Poll until streaming indicator is gone AND new response is extracted
-        while start.elapsed() < timeout {
-            let is_busy = self.client.evaluate_bool(&streaming_js).await?;
-            if !is_busy {
-                // Ensure DOM has settled
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                let extract_js = extract_new_response_markdown_js(initial_response_count);
-                if let Some(md) = self.client.evaluate_string(&extract_js).await?
-                    && !md.trim().is_empty()
-                {
-                    return Ok(md.trim().to_string());
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(400)).await;
-        }
-
-        Err(AxiError::Timeout(
-            timeout.as_secs(),
-            "Gemini response completion".into(),
-        ))
+        self.submit_prompt(prompt).await?;
+        wait_for_new_model_response(&self.client, initial_count, timeout).await
     }
 
     /// Executes a standard chat prompt, optionally selecting a model, and returns the response Markdown.
@@ -358,21 +365,7 @@ impl GeminiDriver {
         model: Option<&str>,
         timeout: Duration,
     ) -> Result<String> {
-        if let Some(m) = model {
-            self.select_model(m, Duration::from_secs(5)).await?;
-        }
-
-        let initial_count = self
-            .client
-            .evaluate_u64(&count_model_responses_js())
-            .await? as usize;
-        debug!(
-            initial_count = initial_count,
-            "Recorded initial response count before prompt"
-        );
-
-        self.submit_prompt(prompt).await?;
-        self.wait_for_response(initial_count, timeout).await
+        self.execute_chat(prompt, None, model, timeout).await
     }
 
     /// Executes a Deep Research workflow:
@@ -583,4 +576,120 @@ impl GeminiDriver {
         self.submit_prompt(prompt).await?;
         self.wait_for_response(initial_count, timeout).await
     }
+}
+
+/// Trims trailing slashes for resilient URL comparisons.
+pub fn normalize_url(url: &str) -> &str {
+    url.trim().trim_end_matches('/')
+}
+
+/// Selector for model response elements.
+pub const MODEL_RESPONSE_SELECTOR: &str = "model-response, message-content.model-response-text, [data-message-author-role='model'], .model-response-text";
+
+/// Selector indicating generation is currently active or streaming.
+pub const STREAMING_INDICATOR_SELECTOR: &str = "button[aria-label*='Stop'], button[aria-label*='Parar'], .streaming-indicator, model-response[is-streaming='true'], button[aria-label*='Parar resposta' i], button[aria-label*='Stop response' i]";
+
+/// Waits until an existing conversation history hydrates into the DOM.
+pub async fn wait_for_conversation_hydration(client: &CdpClient, timeout: Duration) -> Result<()> {
+    debug!("Waiting for existing conversation history to hydrate in DOM");
+    let js_hydrated = format!(
+        r#"(() => {{
+            const responses = document.querySelectorAll("{model_sel}");
+            const streaming = document.querySelector("{stream_sel}");
+            return responses.length > 0 && !streaming;
+        }})()"#,
+        model_sel = MODEL_RESPONSE_SELECTOR,
+        stream_sel = STREAMING_INDICATOR_SELECTOR
+    );
+
+    client
+        .wait_for_condition(
+            "conversation hydration (history rendered)",
+            &js_hydrated,
+            Duration::from_millis(200),
+            timeout,
+        )
+        .await
+        .map_err(|_| {
+            AxiError::Timeout(
+                timeout.as_secs(),
+                "existing conversation messages to hydrate in DOM".into(),
+            )
+        })
+}
+
+/// Counts how many model response elements currently exist in the DOM.
+pub async fn get_model_response_count(client: &CdpClient) -> Result<usize> {
+    let js = count_model_responses_js();
+    let val = client.evaluate_u64(&js).await?;
+    Ok(val as usize)
+}
+
+/// Waits for a new model response (count > initial_count) and completion of streaming.
+pub async fn wait_for_new_model_response(
+    client: &CdpClient,
+    initial_count: usize,
+    timeout: Duration,
+) -> Result<String> {
+    debug!(
+        initial_count = initial_count,
+        "Waiting for new model response"
+    );
+    let start = std::time::Instant::now();
+
+    // 1. Wait for generation to START (streaming active or new response element created)
+    let streaming_js = is_streaming_js();
+    let count_js = count_model_responses_js();
+    let start_timeout = Duration::from_secs(10);
+    let mut started = false;
+
+    while start.elapsed() < start_timeout {
+        let is_stream = client.evaluate_bool(&streaming_js).await?;
+        let current_count = client.evaluate_u64(&count_js).await? as usize;
+        if is_stream || current_count > initial_count {
+            started = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    if !started {
+        return Err(AxiError::GenerationDidNotStart(start_timeout.as_secs()));
+    }
+
+    debug!(started = started, "Generation stream start confirmed");
+
+    // 2. Poll until streaming indicator is gone AND new response is extracted
+    while start.elapsed() < timeout {
+        let is_busy = client.evaluate_bool(&streaming_js).await?;
+        if !is_busy {
+            // Ensure DOM has settled
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let extract_js = extract_new_response_markdown_js(initial_count);
+            if let Some(md) = client.evaluate_string(&extract_js).await?
+                && !md.trim().is_empty()
+            {
+                return Ok(md.trim().to_string());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+
+    Err(AxiError::Timeout(
+        timeout.as_secs(),
+        "Gemini response completion".into(),
+    ))
+}
+
+/// Convenience function to execute a chat prompt via GeminiDriver.
+pub async fn execute_chat(
+    driver: &GeminiDriver,
+    prompt: &str,
+    conversation_url: Option<&str>,
+    model: Option<&str>,
+    timeout: Duration,
+) -> Result<String> {
+    driver
+        .execute_chat(prompt, conversation_url, model, timeout)
+        .await
 }

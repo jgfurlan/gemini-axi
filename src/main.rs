@@ -264,7 +264,7 @@ async fn run(cli: Cli) -> Result<()> {
                 args.model.as_deref(),
                 args.output.as_deref(),
                 args.timeout,
-                None,
+                args.conversation.as_deref(),
                 None,
             )
         }
@@ -367,9 +367,14 @@ async fn run(cli: Cli) -> Result<()> {
         GeminiDriver::connect_and_prepare(&cli.cdp, preferred, Duration::from_secs(30)).await?;
     eprintln!("progress: waiting for Gemini response");
     let response = match command {
-        Command::Chat(_) => {
+        Command::Chat(args) => {
             driver
-                .run_chat(&prompt, model, Duration::from_secs(timeout))
+                .execute_chat(
+                    &prompt,
+                    args.conversation.as_deref(),
+                    model,
+                    Duration::from_secs(timeout),
+                )
                 .await
         }
         Command::Research(_) => {

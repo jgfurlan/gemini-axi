@@ -89,11 +89,7 @@ fn main() {
             _ => ("operation_failed", "Gemini operation could not complete; check login and app readiness".into(), "gemini-axi", 1),
         };
         tracing::debug!(error = %err, "Operation failed");
-        let help = help.replacen(
-            "gemini-axi",
-            &format!("gemini-axi --cdp {}", shell_quote(&endpoint)),
-            1,
-        );
+        let help = help.replacen("gemini-axi", &command_prefix(&endpoint), 1);
         output::print(json!({"error":{"code":code,"message":message},"help":[help]}));
         std::process::exit(exit);
     }
@@ -331,7 +327,7 @@ async fn run(cli: Cli) -> Result<()> {
                     })
                     .collect();
                 output::print(
-                    json!({"count":rows.len(), "gems": rows, "state":if rows.is_empty() {"No Gems found in this Gemini account"} else {"Gems available"}, "help":[format!("gemini-axi --cdp {} gem --id <id> \"<prompt>\"", shell_quote(&cli.cdp))]}),
+                    json!({"count":rows.len(), "gems": rows, "state":if rows.is_empty() {"No Gems found in this Gemini account"} else {"Gems available"}, "help":[format!("{} gem --id <id> \"<prompt>\"", command_prefix(&cli.cdp))]}),
                 );
                 return Ok(());
             }
@@ -420,9 +416,16 @@ async fn run(cli: Cli) -> Result<()> {
             "gemini-axi chat --help (use --full or -o <file> on the next request)".into()
         });
     }
-    help.push(format!("gemini-axi --cdp {} gem", shell_quote(&cli.cdp)));
+    help.push(format!("{} gem", command_prefix(&cli.cdp)));
     output::print(json!({"result":data,"help":help}));
     Ok(())
+}
+fn command_prefix(endpoint: &str) -> String {
+    if endpoint.trim_end_matches('/') == "http://127.0.0.1:9333" {
+        "gemini-axi".into()
+    } else {
+        format!("gemini-axi --cdp {}", shell_quote(endpoint))
+    }
 }
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -467,11 +470,7 @@ async fn home(endpoint: &str) -> Result<()> {
     data["help"] = json!(
         integration::GUIDANCE
             .iter()
-            .map(|s| s.replacen(
-                "gemini-axi",
-                &format!("gemini-axi --cdp {}", shell_quote(endpoint)),
-                1
-            ))
+            .map(|s| s.replacen("gemini-axi", &command_prefix(endpoint), 1))
             .collect::<Vec<_>>()
     );
     output::print(data);
@@ -484,4 +483,22 @@ fn write_output_file(path: &Path, content: &str) -> Result<()> {
         fs::create_dir_all(parent).map_err(|e| AxiError::FileWrite(path.into(), e))?;
     }
     fs::write(path, content).map_err(|e| AxiError::FileWrite(path.into(), e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn hints_omit_only_the_default_endpoint() {
+        assert_eq!(command_prefix("http://127.0.0.1:9333"), "gemini-axi");
+        assert_eq!(command_prefix("http://127.0.0.1:9333/"), "gemini-axi");
+        assert_eq!(
+            command_prefix("http://127.0.0.1:9444"),
+            "gemini-axi --cdp 'http://127.0.0.1:9444'"
+        );
+        assert_eq!(
+            command_prefix("https://example.com/a'b"),
+            "gemini-axi --cdp 'https://example.com/a'\\''b'"
+        );
+    }
 }

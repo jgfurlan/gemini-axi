@@ -277,9 +277,7 @@ async fn test_cli_binary_chat_execution() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("\"response\": \"# Architecture Review\\n\\nArgon response completed.\"")
-    );
+    assert!(stdout.contains("response: \"# Architecture Review\\n\\nArgon response completed.\""));
 }
 
 #[tokio::test]
@@ -454,15 +452,15 @@ async fn dashboard_and_empty_gems_are_definitive_and_do_not_submit() {
     let home = invoke(&server, &[]).await;
     assert!(home.status.success());
     let text = String::from_utf8(home.stdout).unwrap();
-    assert!(text.contains("\"browser\": \"reachable\""));
-    assert!(text.contains("\"login\": \"signed_in\""));
-    assert!(text.contains("\"models\"[3]: \"Fast\",\"Thinking\",\"Pro\""));
-    assert!(text.contains("\"bin\":"));
+    assert!(text.contains("browser: reachable"));
+    assert!(text.contains("login: signed_in"));
+    assert!(text.contains("models[3]: Fast,Thinking,Pro"));
+    assert!(text.contains("bin:"));
     let gems = invoke(&server, &["gem"]).await;
     assert!(gems.status.success());
     let text = String::from_utf8(gems.stdout).unwrap();
-    assert!(text.contains("\"count\": 0"));
-    assert!(text.contains("\"gems\": []"));
+    assert!(text.contains("count: 0"));
+    assert!(text.contains("gems: []"));
     assert!(text.contains("No Gems found in this Gemini account"));
     let calls = server.calls.lock().unwrap();
     assert!(!calls.iter().any(|c| c == "Input.insertText"));
@@ -480,7 +478,7 @@ async fn unavailable_and_signed_out_dashboards() {
         .await
         .unwrap();
     assert!(offline.status.success());
-    assert!(String::from_utf8_lossy(&offline.stdout).contains("\"browser\": \"unreachable\""));
+    assert!(String::from_utf8_lossy(&offline.stdout).contains("browser: unreachable"));
     let server = MockCdpServer::start_with_state(
         MockCdpConfig::default(),
         serde_json::json!({"login":"signed_out","model":null,"models":[],"gems":[]}),
@@ -499,7 +497,7 @@ async fn gem_list_projects_fields_and_carries_endpoint() {
     let list = invoke(&server, &["gem", "--fields", "id,url"]).await;
     assert!(list.status.success());
     let text = String::from_utf8(list.stdout).unwrap();
-    assert!(text.contains("\"gems\"[1]{\"id\",\"url\"}:"));
+    assert!(text.contains("gems[1]{id,url}:"));
     assert!(!text.contains("A, Gem"));
     assert!(text.contains(&server.base_url));
 }
@@ -526,8 +524,8 @@ async fn long_content_is_previewed_and_file_is_complete_for_all_commands() {
             String::from_utf8_lossy(&result.stdout)
         );
         let text = String::from_utf8(result.stdout).unwrap();
-        assert!(text.contains("\"truncated\": true"));
-        assert!(text.contains(&format!("\"chars\": {}", response.chars().count())));
+        assert!(text.contains("truncated: true"));
+        assert!(text.contains(&format!("chars: {}", response.chars().count())));
         assert!(text.contains("--full") || text.contains("cat --"));
         assert!(text.len() < response.len() + 1000);
         assert_eq!(fs::read_to_string(path).unwrap(), response);
@@ -551,7 +549,7 @@ async fn full_and_projection_work_for_chat_and_gem() {
         assert!(result.status.success());
         let text = String::from_utf8(result.stdout).unwrap();
         assert!(text.contains(&response));
-        assert!(!text.contains("\"model\":"));
+        assert!(!text.contains("model:"));
         assert!(!text.contains("use --full"));
     }
 }
@@ -581,10 +579,10 @@ async fn invalid_input_fails_before_browser_calls_and_help_is_successful() {
         assert!(result.status.success());
         let text = String::from_utf8_lossy(&result.stdout);
         assert!(text.contains("--full"));
-        assert!(text.contains("\"examples\"[2]"));
+        assert!(text.contains("examples[2]"));
         assert!(text.contains("--cdp"));
         assert!(!text.contains("gemini-axi gemini-axi"));
-        assert!(text.contains("\"required\":"));
+        assert!(text.contains("required:"));
     }
     assert!(server.calls.lock().unwrap().is_empty());
 }

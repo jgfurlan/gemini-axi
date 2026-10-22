@@ -106,15 +106,15 @@ impl MockCdpServer {
 
                                                     let result_value = if expr.contains("window.location.href") {
                                                         serde_json::json!("https://gemini.google.com/app")
-                                                    } else if expr.contains("is_app_ready") || expr.contains("selectors = [\"rich-textarea") {
-                                                        serde_json::json!(true)
-                                                    } else if expr.contains("targetModel") || expr.contains("triggers = [\"button") {
-                                                        serde_json::json!(true)
-                                                    } else if expr.contains("target.focus()") || expr.contains("target.value = text") {
-                                                        serde_json::json!(true)
-                                                    } else if expr.contains("el.click();\n                    return true;") {
-                                                        serde_json::json!(true)
-                                                    } else if expr.contains("approveSelectors") {
+                                                    } else if expr.contains("is_app_ready")
+                                                        || expr.contains("selectors = [\"rich-textarea")
+                                                        || expr.contains("targetModel")
+                                                        || expr.contains("triggers = [\"button")
+                                                        || expr.contains("target.focus()")
+                                                        || expr.contains("target.value = text")
+                                                        || expr.contains("el.click();\n                    return true;")
+                                                        || expr.contains("approveSelectors")
+                                                    {
                                                         serde_json::json!(true)
                                                     } else if expr.contains("progressSelectors") {
                                                         serde_json::json!(false)

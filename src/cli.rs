@@ -91,6 +91,7 @@ pub struct ChatArgs {
     #[arg(
         value_name = "PROMPT",
         conflicts_with = "prompt_file",
+        required_unless_present = "prompt_file",
         help = "Prompt text string"
     )]
     pub prompt: Option<String>,
@@ -103,6 +104,15 @@ pub struct ChatArgs {
         help = "File containing the prompt"
     )]
     pub prompt_file: Option<PathBuf>,
+
+    /// Continue an existing chat conversation by URL
+    #[arg(
+        long = "conversation",
+        value_name = "URL",
+        value_parser = validate_gemini_conversation_url,
+        help = "Continue an existing chat conversation by URL (e.g., https://gemini.google.com/app/<id>)"
+    )]
+    pub conversation: Option<String>,
 
     /// Select Gemini model (e.g. argon, pro, flash)
     #[arg(
@@ -130,6 +140,29 @@ pub struct ChatArgs {
         help = "Operation timeout in seconds"
     )]
     pub timeout: u64,
+}
+
+/// Validates that the provided conversation URL belongs to the Gemini Web App.
+pub fn validate_gemini_conversation_url(url: &str) -> std::result::Result<String, String> {
+    let trimmed = url.trim();
+    if trimmed.starts_with("https://gemini.google.com/app/")
+        || trimmed == "https://gemini.google.com/app"
+    {
+        // Extract trailing segment if `/app/<id>` is used to ensure `<id>` is not empty after slash
+        if let Some(id) = trimmed.strip_prefix("https://gemini.google.com/app/")
+            && id.trim_matches('/').is_empty()
+        {
+            return Err(
+                "Conversation URL must include a valid conversation ID after '/app/'".to_string(),
+            );
+        }
+        Ok(trimmed.to_string())
+    } else {
+        Err(format!(
+            "Invalid Gemini conversation URL: '{}'. Expected format: https://gemini.google.com/app/<id>",
+            url
+        ))
+    }
 }
 
 impl ChatArgs {
@@ -169,6 +202,7 @@ pub struct ResearchArgs {
     #[arg(
         long = "conversation",
         value_name = "URL",
+        value_parser = validate_gemini_conversation_url,
         help = "Existing Gemini conversation URL to resume"
     )]
     pub conversation: Option<String>,
@@ -272,4 +306,76 @@ pub struct DisplayArgs {
     /// Fields: response,chars,model,conversation,output,truncated; Gem lists: id,name,url
     #[arg(long, value_delimiter = ',')]
     pub fields: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_chat_args_without_conversation() {
+        let cli = Cli::try_parse_from(["gemini-axi", "chat", "Hello Gemini"]).unwrap();
+        if let Some(Command::Chat(args)) = cli.command {
+            assert_eq!(args.prompt.as_deref(), Some("Hello Gemini"));
+            assert_eq!(args.conversation, None);
+        } else {
+            panic!("Expected Command::Chat");
+        }
+    }
+
+    #[test]
+    fn test_chat_args_with_valid_conversation_url() {
+        let url = "https://gemini.google.com/app/1a2b3c4d5e6f";
+        let cli = Cli::try_parse_from([
+            "gemini-axi",
+            "chat",
+            "--conversation",
+            url,
+            "Continue from last point",
+        ])
+        .unwrap();
+
+        if let Some(Command::Chat(args)) = cli.command {
+            assert_eq!(args.prompt.as_deref(), Some("Continue from last point"));
+            assert_eq!(args.conversation.as_deref(), Some(url));
+        } else {
+            panic!("Expected Command::Chat");
+        }
+    }
+
+    #[test]
+    fn test_chat_args_rejects_invalid_conversation_domain() {
+        let res = Cli::try_parse_from([
+            "gemini-axi",
+            "chat",
+            "--conversation",
+            "https://example.com/app/123",
+            "Hello",
+        ]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_chat_args_rejects_empty_conversation_id_with_trailing_slash() {
+        let res = Cli::try_parse_from([
+            "gemini-axi",
+            "chat",
+            "--conversation",
+            "https://gemini.google.com/app/",
+            "Hello",
+        ]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_chat_args_requires_prompt_even_with_conversation() {
+        let res = Cli::try_parse_from([
+            "gemini-axi",
+            "chat",
+            "--conversation",
+            "https://gemini.google.com/app/1a2b3c4d5e6f",
+        ]);
+        assert!(res.is_err(), "Chat command must still require a prompt");
+    }
 }

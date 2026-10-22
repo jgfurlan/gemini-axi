@@ -206,7 +206,27 @@ fn test_cli_parsing_and_defaults() {
             assert_eq!(args.prompt, Some("Draft invariant spec".into()));
             assert_eq!(args.model, Some("argon".into()));
             assert_eq!(args.timeout, 120);
+            assert_eq!(args.conversation, None);
             assert_eq!(args.resolve_prompt().unwrap(), "Draft invariant spec");
+        }
+        _ => panic!("Expected Chat command"),
+    }
+
+    let cli = Cli::parse_from([
+        "gemini-axi",
+        "chat",
+        "--conversation",
+        "https://gemini.google.com/app/1a2b3c4d5e6f",
+        "Continue discussion",
+    ]);
+    match cli.command {
+        Some(CliCommand::Chat(args)) => {
+            assert_eq!(args.prompt, Some("Continue discussion".into()));
+            assert_eq!(
+                args.conversation.as_deref(),
+                Some("https://gemini.google.com/app/1a2b3c4d5e6f")
+            );
+            assert_eq!(args.resolve_prompt().unwrap(), "Continue discussion");
         }
         _ => panic!("Expected Chat command"),
     }
@@ -565,6 +585,13 @@ async fn invalid_input_fails_before_browser_calls_and_help_is_successful() {
         vec!["chat", "x", "--unknown"],
         vec!["chat", "x", "--fields", "typo"],
         vec!["chat", "x", "--timeout", "0"],
+        vec!["chat", "--conversation", "https://example.com", "x"],
+        vec![
+            "chat",
+            "--conversation",
+            "https://gemini.google.com/app/",
+            "x",
+        ],
         vec!["research", "--conversation", "https://example.com"],
         vec!["gem", "prompt"],
         vec!["--setup-hooks", "claude", "chat", "x"],
@@ -774,4 +801,124 @@ async fn session_end_captures_metadata_and_next_dashboard_uses_compact_summary()
     assert!(text.contains("last_session"));
     assert!(text.contains("s1"));
     assert!(!text.contains("/tmp/transcript.jsonl"));
+}
+
+#[tokio::test]
+async fn test_execute_chat_continues_existing_conversation_and_waits_for_n_plus_1() {
+    let target_url = "https://gemini.google.com/app/conv_999";
+    let fixture_md = "# Turn 3 Answer\n\nAnswer to follow-up question.";
+    let server = MockCdpServer::start(MockCdpConfig {
+        response_markdown: fixture_md.into(),
+        stream_poll_count: 2,
+        inject_error: false,
+        stale_response: Some("# Stale turn 2 answer".into()),
+        plan_only: false,
+    })
+    .await;
+
+    let driver = GeminiDriver::connect_and_prepare(
+        &server.base_url,
+        Some(target_url),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("driver should connect and initialize");
+
+    let response = driver
+        .execute_chat(
+            "Third question",
+            Some(target_url),
+            None,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("execute_chat should succeed");
+
+    assert_eq!(response, fixture_md);
+    assert!(
+        server
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"Page.navigate".to_string())
+    );
+    assert_eq!(*server.current_url.lock().unwrap(), target_url);
+}
+
+#[tokio::test]
+async fn test_execute_chat_skips_navigation_when_already_on_target_conversation_url() {
+    let target_url = "https://gemini.google.com/app/conv_999";
+    let fixture_md = "# Turn 3 Answer\n\nAnswer to follow-up question.";
+    let server = MockCdpServer::start(MockCdpConfig {
+        response_markdown: fixture_md.into(),
+        stream_poll_count: 1,
+        inject_error: false,
+        stale_response: None,
+        plan_only: false,
+    })
+    .await;
+
+    // Pre-set server's active URL with trailing slash
+    server.set_current_url("https://gemini.google.com/app/conv_999/");
+
+    let driver = GeminiDriver::connect_and_prepare(
+        &server.base_url,
+        Some(target_url),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("driver should connect and initialize");
+
+    // Clear calls during connect_and_prepare
+    server.calls.lock().unwrap().clear();
+
+    let response = driver
+        .execute_chat(
+            "Follow-up question",
+            Some(target_url),
+            None,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("execute_chat should succeed");
+
+    assert_eq!(response, fixture_md);
+    // Should NOT have navigated because normalize_url trimmed trailing slash and matched
+    assert!(
+        !server
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"Page.navigate".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_cli_binary_chat_with_conversation_url() {
+    let target_url = "https://gemini.google.com/app/conv_123456";
+    let fixture_md = "# Turn 2 Answer\n\nContinuation from previous turn.";
+    let server = MockCdpServer::start(MockCdpConfig {
+        response_markdown: fixture_md.into(),
+        stream_poll_count: 1,
+        inject_error: false,
+        stale_response: None,
+        plan_only: false,
+    })
+    .await;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_gemini-axi"))
+        .arg("--cdp")
+        .arg(&server.base_url)
+        .arg("chat")
+        .arg("--conversation")
+        .arg(target_url)
+        .arg("Continue discussion")
+        .output()
+        .await
+        .expect("binary should execute");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(&format!("conversation: \"{target_url}\"")));
+    assert!(stdout.contains("response: \"# Turn 2 Answer\\n\\nContinuation from previous turn.\""));
 }

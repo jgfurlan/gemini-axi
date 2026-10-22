@@ -30,10 +30,15 @@ pub struct MockCdpServer {
     pub base_url: String,
     pub ws_url: String,
     _shutdown: tokio::sync::oneshot::Sender<()>,
+    pub calls: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl MockCdpServer {
     pub async fn start(config: MockCdpConfig) -> Self {
+        Self::start_with_state(config, serde_json::json!({"login":"signed_in", "model":"Fast", "models":["Fast", "Thinking", "Pro"], "gems":[]})).await
+    }
+
+    pub async fn start_with_state(config: MockCdpConfig, observation: serde_json::Value) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let base_url = format!("http://127.0.0.1:{port}");
@@ -41,6 +46,8 @@ impl MockCdpServer {
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let config = Arc::new(config);
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let server_calls = calls.clone();
         let stream_counter = Arc::new(AtomicUsize::new(0));
         let plan_approved = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -57,6 +64,8 @@ impl MockCdpServer {
                         };
 
                         let cfg = config.clone();
+                        let observation = observation.clone();
+                        let calls = server_calls.clone();
                         let stream_count = stream_counter.clone();
                         let approved = plan_approved.clone();
                         let server_port = port;
@@ -88,6 +97,7 @@ impl MockCdpServer {
                                         let id = val.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
                                         let method = val.get("method").and_then(|v| v.as_str()).unwrap_or("");
 
+                                        calls.lock().unwrap().push(method.into());
                                         let resp = match method {
                                             "Page.enable" | "Runtime.enable" | "DOM.enable" | "Page.navigate"
                                             | "Input.insertText" => {
@@ -143,7 +153,9 @@ impl MockCdpServer {
                                                         .and_then(|e| e.as_str())
                                                         .unwrap_or("");
 
-                                                    let result_value = if expr.contains("window.location.href") {
+                                                    let result_value = if expr.contains("gemini_axi_state") {
+                                                        observation.clone()
+                                                    } else if expr.contains("window.location.href") {
                                                         serde_json::json!("https://gemini.google.com/app")
                                                     } else if expr.contains("isPlan") || expr.contains("isProgressOnly") {
                                                         if cfg.plan_only {
@@ -334,6 +346,7 @@ impl MockCdpServer {
             base_url,
             ws_url,
             _shutdown: shutdown_tx,
+            calls,
         }
     }
 }

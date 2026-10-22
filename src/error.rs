@@ -3,6 +3,15 @@ use std::path::PathBuf;
 /// Application errors for gemini-axi.
 #[derive(thiserror::Error, Debug)]
 pub enum AxiError {
+    #[error("{0}")]
+    Configuration(String),
+
+    #[error("Sign into Gemini in agents Chrome before continuing")]
+    NotSignedIn,
+
+    #[error("{0}")]
+    Usage(String),
+
     #[error("connection refused connecting to CDP at {0}")]
     ConnectionRefused(String),
 

@@ -7,8 +7,9 @@ use crate::error::{AxiError, Result};
 #[derive(Parser, Debug)]
 #[command(
     name = "gemini-axi",
-    about = "Zero-token CDP bridge for the Gemini Web App",
+    about = crate::integration::DESCRIPTION,
     version,
+    after_help = "Examples:\n  gemini-axi\n  gemini-axi chat \"<prompt>\"\n  gemini-axi research \"<topic>\" -o report.md",
     help_template = "\
 {before-help}{name} {version}
 {about-with-newline}
@@ -28,11 +29,26 @@ pub struct Cli {
     pub cdp: String,
 
     /// Verbose logging to stderr
-    #[arg(short, long, global = true, help = "Log debug info to stderr")]
+    #[arg(long, global = true, help = "Log debug info to stderr")]
     pub verbose: bool,
 
+    /// Install or repair project-scoped session integration (explicit opt-in)
+    #[arg(long, value_parser = ["claude", "codex", "opencode"])]
+    pub setup_hooks: Option<String>,
+
+    /// Generate the installable skill from CLI guidance
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["setup_hooks", "check_skill"])]
+    pub write_skill: Option<PathBuf>,
+
+    /// Fail if the committed skill differs from CLI guidance
+    #[arg(long, value_name = "FILE", conflicts_with = "setup_hooks")]
+    pub check_skill: Option<PathBuf>,
+
+    #[arg(long, hide = true, conflicts_with_all = ["setup_hooks", "write_skill", "check_skill"])]
+    pub session_end: bool,
+
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 impl Cli {
@@ -46,22 +62,37 @@ impl Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Send a chat prompt to Gemini (with optional model selection)
-    #[command(about = "Send a chat prompt to Gemini")]
+    #[command(
+        about = "Send a chat prompt to Gemini",
+        after_help = "Examples:\n  gemini-axi chat \"<prompt>\"\n  gemini-axi chat --prompt-file request.md -o response.md --full"
+    )]
     Chat(ChatArgs),
 
     /// Run Deep Research, auto-approve research plan, and save dossier to disk
-    #[command(about = "Run Deep Research and save dossier to disk")]
+    #[command(
+        about = "Run Deep Research and save dossier to disk",
+        after_help = "Examples:\n  gemini-axi research \"<topic>\" -o report.md\n  gemini-axi research --conversation <url> --full"
+    )]
     Research(ResearchArgs),
 
     /// Interact with a custom Gemini Gem
-    #[command(about = "Interact with a custom Gem")]
+    #[command(
+        about = "List Gems or interact with a custom Gem",
+        after_help = "Examples:\n  gemini-axi gem\n  gemini-axi gem --id <id> \"<prompt>\""
+    )]
     Gem(GemArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct ChatArgs {
+    #[command(flatten)]
+    pub display: DisplayArgs,
     /// Prompt text to send
-    #[arg(value_name = "PROMPT", help = "Prompt text string")]
+    #[arg(
+        value_name = "PROMPT",
+        conflicts_with = "prompt_file",
+        help = "Prompt text string"
+    )]
     pub prompt: Option<String>,
 
     /// Read prompt text from file
@@ -82,7 +113,7 @@ pub struct ChatArgs {
     )]
     pub model: Option<String>,
 
-    /// Write response Markdown to file instead of stdout
+    /// Save complete response Markdown and include a preview on stdout
     #[arg(
         short = 'o',
         long = "output",
@@ -115,8 +146,14 @@ impl ChatArgs {
 
 #[derive(Args, Debug)]
 pub struct ResearchArgs {
+    #[command(flatten)]
+    pub display: DisplayArgs,
     /// Research prompt text string
-    #[arg(value_name = "PROMPT", help = "Research prompt string")]
+    #[arg(
+        value_name = "PROMPT",
+        conflicts_with = "prompt_file",
+        help = "Research prompt string"
+    )]
     pub prompt: Option<String>,
 
     /// Read research prompt from file
@@ -140,11 +177,10 @@ pub struct ResearchArgs {
     #[arg(
         short = 'o',
         long = "output",
-        required = true,
         value_name = "FILE",
         help = "Destination file for Markdown dossier"
     )]
-    pub output: PathBuf,
+    pub output: Option<PathBuf>,
 
     /// Timeout in seconds (Deep Research may take 5-20 minutes, default: 1800s / 30m)
     #[arg(
@@ -173,14 +209,11 @@ impl ResearchArgs {
 
 #[derive(Args, Debug)]
 pub struct GemArgs {
+    #[command(flatten)]
+    pub display: DisplayArgs,
     /// Custom Gem ID or slug
-    #[arg(
-        long = "id",
-        required = true,
-        value_name = "GEM_ID",
-        help = "Gem identifier or slug"
-    )]
-    pub id: String,
+    #[arg(long = "id", value_name = "GEM_ID", help = "Gem identifier or slug")]
+    pub id: Option<String>,
 
     /// Input file to send as prompt
     #[arg(
@@ -192,10 +225,14 @@ pub struct GemArgs {
     pub input: Option<PathBuf>,
 
     /// Direct prompt string
-    #[arg(value_name = "PROMPT", help = "Direct prompt string")]
+    #[arg(
+        value_name = "PROMPT",
+        conflicts_with = "input",
+        help = "Direct prompt string"
+    )]
     pub prompt: Option<String>,
 
-    /// Save response Markdown to file instead of stdout
+    /// Save complete response Markdown and include a preview on stdout
     #[arg(
         short = 'o',
         long = "output",
@@ -225,4 +262,14 @@ impl GemArgs {
         }
         Err(AxiError::EmptyPrompt)
     }
+}
+
+#[derive(Args, Debug, Default)]
+pub struct DisplayArgs {
+    /// Include complete response (default: first 1000 Unicode characters)
+    #[arg(long)]
+    pub full: bool,
+    /// Fields: response,chars,model,conversation,output,truncated; Gem lists: id,name,url
+    #[arg(long, value_delimiter = ',')]
+    pub fields: Vec<String>,
 }

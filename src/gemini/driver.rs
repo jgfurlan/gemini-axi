@@ -376,96 +376,181 @@ impl GeminiDriver {
     }
 
     /// Executes a Deep Research workflow:
-    /// 1. Enables Deep Research mode.
+    /// 1. Enables Deep Research mode (if starting fresh).
     /// 2. Submits research request.
     /// 3. Waits for the Research Plan to appear.
-    /// 4. Approves the research plan.
-    /// 5. Waits for multi-step research synthesis to finish.
-    /// 6. Extracts the complete dossier in Markdown.
+    /// 4. Approves the research plan by clicking "Iniciar pesquisa" / "Start research".
+    /// 5. Waits for multi-step research synthesis to finish, reporting progress.
+    /// 6. Extracts the complete dossier in Markdown, rejecting incomplete plans.
     pub async fn run_research(&self, prompt: &str, timeout: Duration) -> Result<String> {
         info!("Initiating Deep Research run");
-        self.enable_deep_research(Duration::from_secs(10)).await?;
 
-        let initial_count = self
-            .client
-            .evaluate_u64(&count_model_responses_js())
-            .await? as usize;
-        debug!(
-            initial_count = initial_count,
-            "Recorded initial response count before research prompt"
-        );
-
-        self.submit_prompt(prompt).await?;
-
-        // Wait for plan generation (up to 90 seconds)
-        let plan_timeout = Duration::from_secs(90);
-        debug!("Waiting for Deep Research plan to appear");
-        let start_plan = std::time::Instant::now();
         let plan_js = check_research_plan_js();
-        let mut plan_ready = false;
-
-        while start_plan.elapsed() < plan_timeout {
-            if self.client.evaluate_bool(&plan_js).await? {
-                plan_ready = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(400)).await;
-        }
-
-        if plan_ready {
-            debug!("Deep Research plan detected; auto-approving plan");
-            let approve_js = approve_research_plan_js();
-            let _ = self.client.evaluate_bool(&approve_js).await;
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        } else {
-            debug!(
-                "No explicit research plan confirmation detected; checking if research started directly"
-            );
-        }
-
-        // Wait for research synthesis to complete
-        debug!("Waiting for Deep Research synthesis to complete");
-        let start_research = std::time::Instant::now();
         let is_running_js = is_research_in_progress_js();
-        let is_stream_js = is_streaming_js();
 
-        // Wait for research to START (up to 15s)
-        let mut started = false;
-        while start_research.elapsed() < Duration::from_secs(15) {
-            let running = self.client.evaluate_bool(&is_running_js).await?
-                || self.client.evaluate_bool(&is_stream_js).await?;
-            let current_count = self
+        // Check if completed dossier is already present (e.g. resuming completed conversation)
+        let initial_extract_js = extract_research_report_js(0);
+        if let Ok(Some(existing_dossier)) = self.client.evaluate_string(&initial_extract_js).await {
+            let trimmed = existing_dossier.trim();
+            let is_running = self
+                .client
+                .evaluate_bool(&is_running_js)
+                .await
+                .unwrap_or(false);
+            if !trimmed.is_empty() && !is_running {
+                info!("Completed Deep Research dossier already present on page");
+                return Ok(trimmed.to_string());
+            }
+        }
+
+        let plan_already_present = self.client.evaluate_bool(&plan_js).await.unwrap_or(false);
+        let already_running = self
+            .client
+            .evaluate_bool(&is_running_js)
+            .await
+            .unwrap_or(false);
+
+        let initial_count = if !plan_already_present && !already_running {
+            if prompt.trim().is_empty() {
+                return Err(AxiError::EmptyPrompt);
+            }
+
+            self.enable_deep_research(Duration::from_secs(10)).await?;
+
+            let count = self
                 .client
                 .evaluate_u64(&count_model_responses_js())
                 .await? as usize;
-            if running || current_count > initial_count {
+            debug!(
+                initial_count = count,
+                "Recorded initial response count before research prompt"
+            );
+
+            self.submit_prompt(prompt).await?;
+
+            // Wait for plan generation (up to 90 seconds)
+            let plan_timeout = Duration::from_secs(90);
+            debug!("Waiting for Deep Research plan to appear");
+            let start_plan = std::time::Instant::now();
+            let mut plan_ready = false;
+
+            while start_plan.elapsed() < plan_timeout {
+                if self.client.evaluate_bool(&plan_js).await? {
+                    plan_ready = true;
+                    break;
+                }
+                if self.client.evaluate_bool(&is_running_js).await? {
+                    // Started directly
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+
+            if !plan_ready && !self.client.evaluate_bool(&is_running_js).await? {
+                return Err(AxiError::GenerationDidNotStart(plan_timeout.as_secs()));
+            }
+
+            count
+        } else {
+            debug!("Existing plan or running research detected on current page");
+            0
+        };
+
+        // If plan is awaiting approval, click "Iniciar pesquisa" / "Start research"
+        if self.client.evaluate_bool(&plan_js).await.unwrap_or(false) {
+            info!("Deep Research plan detected; auto-approving research plan ('Iniciar pesquisa')");
+            let approve_js = approve_research_plan_js();
+            let mut approved = false;
+            let start_approve = std::time::Instant::now();
+            while start_approve.elapsed() < Duration::from_secs(10) {
+                if self
+                    .client
+                    .evaluate_bool(&approve_js)
+                    .await
+                    .unwrap_or(false)
+                {
+                    approved = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            if !approved {
+                debug!("Approve click dispatched; checking if research execution started");
+            }
+        }
+
+        // Wait for research to START (up to min(30s, timeout))
+        debug!("Waiting for Deep Research execution to start");
+        let start_research_wait = std::time::Instant::now();
+        let wait_start_timeout = std::cmp::min(Duration::from_secs(30), timeout);
+        let mut started = false;
+        while start_research_wait.elapsed() < wait_start_timeout {
+            let running = self
+                .client
+                .evaluate_bool(&is_running_js)
+                .await
+                .unwrap_or(false);
+            if running {
                 started = true;
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
         if !started {
-            return Err(AxiError::GenerationDidNotStart(15));
+            // Check if still stuck on plan
+            if self.client.evaluate_bool(&plan_js).await.unwrap_or(false) {
+                return Err(AxiError::ResearchPlanNotCompleted);
+            }
+            return Err(AxiError::GenerationDidNotStart(
+                wait_start_timeout.as_secs(),
+            ));
         }
 
-        // Give research at least 3 seconds before assuming completion
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        info!("Deep Research execution confirmed; waiting for multi-step synthesis to complete");
+        let start_synthesis = std::time::Instant::now();
+        let progress_js = get_research_progress_js();
+        let mut last_progress = String::new();
 
-        while start_research.elapsed() < timeout {
-            let running = self.client.evaluate_bool(&is_running_js).await?
-                || self.client.evaluate_bool(&is_stream_js).await?;
-
-            if !running {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                let extract_js = extract_new_response_markdown_js(initial_count);
-                if let Some(dossier) = self.client.evaluate_string(&extract_js).await?
-                    && !dossier.trim().is_empty()
-                {
-                    return Ok(dossier.trim().to_string());
+        while start_synthesis.elapsed() < timeout {
+            // Monitor progress text in stderr for -v
+            if let Ok(Some(prog)) = self.client.evaluate_string(&progress_js).await {
+                let trimmed = prog.trim();
+                if !trimmed.is_empty() && trimmed != last_progress {
+                    info!("Deep Research: {}", trimmed);
+                    last_progress = trimmed.to_string();
                 }
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            let running = self
+                .client
+                .evaluate_bool(&is_running_js)
+                .await
+                .unwrap_or(false);
+            if !running {
+                // Let DOM settle
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let still_running = self
+                    .client
+                    .evaluate_bool(&is_running_js)
+                    .await
+                    .unwrap_or(false);
+                if !still_running {
+                    let extract_js = extract_research_report_js(initial_count);
+                    if let Some(dossier) = self.client.evaluate_string(&extract_js).await? {
+                        let trimmed = dossier.trim();
+                        if !trimmed.is_empty() {
+                            return Ok(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+
+        // Timed out: check if only plan is present
+        if self.client.evaluate_bool(&plan_js).await.unwrap_or(false) {
+            return Err(AxiError::ResearchPlanNotCompleted);
         }
 
         Err(AxiError::Timeout(

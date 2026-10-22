@@ -45,6 +45,7 @@ async fn test_gemini_driver_chat_flow() {
         stream_poll_count: 1,
         inject_error: false,
         stale_response: None,
+        plan_only: false,
     })
     .await;
 
@@ -72,6 +73,7 @@ async fn test_gemini_driver_research_flow() {
         stream_poll_count: 1,
         inject_error: false,
         stale_response: None,
+        plan_only: false,
     })
     .await;
 
@@ -99,6 +101,7 @@ async fn test_gemini_driver_gem_flow() {
         stream_poll_count: 1,
         inject_error: false,
         stale_response: None,
+        plan_only: false,
     })
     .await;
 
@@ -145,6 +148,7 @@ async fn test_cdp_injected_error() {
         stream_poll_count: 0,
         inject_error: true,
         stale_response: None,
+        plan_only: false,
     })
     .await;
 
@@ -222,7 +226,7 @@ fn test_cli_parsing_and_defaults() {
         CliCommand::Research(args) => {
             assert_eq!(args.prompt, Some("Investigate Paxos".into()));
             assert_eq!(args.output.to_str().unwrap(), "out/report.md");
-            assert_eq!(args.timeout, 600);
+            assert_eq!(args.timeout, 1800);
         }
         _ => panic!("Expected Research command"),
     }
@@ -253,6 +257,7 @@ async fn test_cli_binary_chat_execution() {
         stream_poll_count: 1,
         inject_error: false,
         stale_response: None,
+        plan_only: false,
     })
     .await;
 
@@ -280,6 +285,7 @@ async fn test_cli_binary_research_file_output() {
         stream_poll_count: 1,
         inject_error: false,
         stale_response: None,
+        plan_only: false,
     })
     .await;
 
@@ -347,6 +353,7 @@ async fn test_mock_cdp_rejects_stale_response_and_returns_fresh() {
         stream_poll_count: 2,
         inject_error: false,
         stale_response: Some(stale_text.into()),
+        plan_only: false,
     })
     .await;
 
@@ -376,6 +383,7 @@ async fn test_mock_cdp_fails_when_generation_does_not_start() {
         stream_poll_count: 0, // generation never starts
         inject_error: false,
         stale_response: Some(stale_text.into()),
+        plan_only: false,
     })
     .await;
 
@@ -395,5 +403,34 @@ async fn test_mock_cdp_fails_when_generation_does_not_start() {
     match err {
         gemini_axi::error::AxiError::GenerationDidNotStart(_) => {}
         other => panic!("Expected GenerationDidNotStart error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_mock_cdp_fails_when_research_only_produces_plan() {
+    let server = MockCdpServer::start(MockCdpConfig {
+        response_markdown: "Aqui está meu plano para abordar esse tema. Iniciar pesquisa".into(),
+        stream_poll_count: 0,
+        inject_error: false,
+        stale_response: None,
+        plan_only: true,
+    })
+    .await;
+
+    let driver = GeminiDriver::connect_and_prepare(&server.base_url, None, Duration::from_secs(5))
+        .await
+        .unwrap();
+
+    let err = driver
+        .run_research(
+            "teste gemini-axi: breve resumo historico sobre a invencao do transistor",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+
+    match err {
+        gemini_axi::error::AxiError::ResearchPlanNotCompleted => {}
+        other => panic!("Expected ResearchPlanNotCompleted error, got: {other:?}"),
     }
 }

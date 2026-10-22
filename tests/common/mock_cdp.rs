@@ -11,6 +11,7 @@ pub struct MockCdpConfig {
     pub stream_poll_count: usize,
     pub inject_error: bool,
     pub stale_response: Option<String>,
+    pub plan_only: bool,
 }
 
 impl Default for MockCdpConfig {
@@ -20,6 +21,7 @@ impl Default for MockCdpConfig {
             stream_poll_count: 1,
             inject_error: false,
             stale_response: None,
+            plan_only: false,
         }
     }
 }
@@ -40,6 +42,7 @@ impl MockCdpServer {
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let config = Arc::new(config);
         let stream_counter = Arc::new(AtomicUsize::new(0));
+        let plan_approved = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         tokio::spawn(async move {
             loop {
@@ -55,6 +58,7 @@ impl MockCdpServer {
 
                         let cfg = config.clone();
                         let stream_count = stream_counter.clone();
+                        let approved = plan_approved.clone();
                         let server_port = port;
 
                         tokio::spawn(async move {
@@ -141,6 +145,19 @@ impl MockCdpServer {
 
                                                     let result_value = if expr.contains("window.location.href") {
                                                         serde_json::json!("https://gemini.google.com/app")
+                                                    } else if expr.contains("isPlan") || expr.contains("isProgressOnly") {
+                                                        if cfg.plan_only {
+                                                            serde_json::Value::Null
+                                                        } else {
+                                                            let count = stream_count.load(Ordering::SeqCst);
+                                                            if count < cfg.stream_poll_count {
+                                                                serde_json::Value::Null
+                                                            } else {
+                                                                serde_json::json!(cfg.response_markdown)
+                                                            }
+                                                        }
+                                                    } else if expr.contains(".current-step") && expr.contains("activeSteps") {
+                                                        serde_json::json!("Pesquisando em 12 sites...")
                                                     } else if expr.contains("nodeToMarkdown") || expr.contains("extract_new_response") {
                                                         if let Some(ref stale) = cfg.stale_response {
                                                             if expr.contains("initialCount = 1") {
@@ -176,6 +193,19 @@ impl MockCdpServer {
                                                         } else {
                                                             serde_json::json!(1)
                                                         }
+                                                    } else if expr.contains("triggerClick") {
+                                                        approved.store(true, Ordering::SeqCst);
+                                                        serde_json::json!(true)
+                                                    } else if expr.contains("planSelectors")
+                                                        || (expr.contains("start research") && expr.contains("approveSelectors"))
+                                                    {
+                                                        if cfg.plan_only {
+                                                            serde_json::json!(true)
+                                                        } else if approved.load(Ordering::SeqCst) {
+                                                            serde_json::json!(false)
+                                                        } else {
+                                                            serde_json::json!(true)
+                                                        }
                                                     } else if expr.contains("is_app_ready")
                                                         || expr.contains("selectors = [\"rich-textarea")
                                                         || expr.contains("targetModel")
@@ -190,9 +220,20 @@ impl MockCdpServer {
                                                         || expr.contains("ferramentas")
                                                     {
                                                         serde_json::json!(true)
-                                                    } else if expr.contains("progressSelectors") {
-                                                        serde_json::json!(false)
-                                                    } else if expr.contains("stopSelectors") || expr.contains("sendSelectors") {
+                                                    } else if expr.contains("stopButtons") {
+                                                        if cfg.plan_only || !approved.load(Ordering::SeqCst) {
+                                                            serde_json::json!(false)
+                                                        } else {
+                                                            let count = stream_count.fetch_add(1, Ordering::SeqCst);
+                                                            if count < cfg.stream_poll_count {
+                                                                serde_json::json!(true)
+                                                            } else {
+                                                                serde_json::json!(false)
+                                                            }
+                                                        }
+                                                    } else if expr.contains("stopSelectors")
+                                                        || expr.contains("sendSelectors")
+                                                    {
                                                         let count = stream_count.fetch_add(1, Ordering::SeqCst);
                                                         if count < cfg.stream_poll_count {
                                                             serde_json::json!(true)

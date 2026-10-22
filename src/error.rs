@@ -18,6 +18,9 @@ pub enum AxiError {
     #[error("generation did not start within {0}s")]
     GenerationDidNotStart(u64),
 
+    #[error("Deep Research only produced a plan and did not generate a final report")]
+    ResearchPlanNotCompleted,
+
     #[error("prompt was not submitted to conversation DOM: {0}")]
     PromptNotSubmitted(String),
 

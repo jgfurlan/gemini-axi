@@ -75,7 +75,8 @@ gemini-axi gem --id "hypertrophy-physiologist" --input athlete-data.json
 * `research [PROMPT]`:
   * `-p, --prompt-file <FILE>`: Read research prompt from file.
   * `-o, --output <FILE>`: Destination file for synthesized dossier Markdown (required).
-  * `--timeout <SECS>`: Total timeout for research and plan execution (default: `600`).
+  * `--conversation <URL>`: Resume or attach to an existing Gemini conversation URL.
+  * `--timeout <SECS>`: Total timeout for research and plan execution (default: `1800` / 30 min).
 * `gem [PROMPT]`:
   * `--id <GEM_ID>`: Custom Gem identifier or slug (required).
   * `-i, --input <FILE>`: Input file containing context or data for the Gem.

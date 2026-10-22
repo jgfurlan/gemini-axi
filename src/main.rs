@@ -80,8 +80,10 @@ async fn handle_chat(cdp: &str, args: ChatArgs) -> Result<()> {
 async fn handle_research(cdp: &str, args: ResearchArgs) -> Result<()> {
     let prompt = args.resolve_prompt()?;
     let timeout = Duration::from_secs(args.timeout);
+    let preferred_url = args.conversation.as_deref();
 
-    let driver = GeminiDriver::connect_and_prepare(cdp, None, Duration::from_secs(30)).await?;
+    let driver =
+        GeminiDriver::connect_and_prepare(cdp, preferred_url, Duration::from_secs(30)).await?;
 
     let res = driver.run_research(&prompt, timeout).await;
 

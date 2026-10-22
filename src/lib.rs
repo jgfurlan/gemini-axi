@@ -7,3 +7,6 @@ pub use cdp::CdpClient;
 pub use error::{AxiError, Result};
 pub use gemini::GeminiDriver;
 pub use gemini::selectors;
+pub mod inspect;
+pub mod integration;
+pub mod output;

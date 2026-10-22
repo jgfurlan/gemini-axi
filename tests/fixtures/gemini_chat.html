@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Gemini</title>
+</head>
+<body>
+  <div id="app">
+    <!-- Model selector button -->
+    <button class="model-picker-button" data-test-id="model-selector" aria-label="Model: Argon">
+      <span class="model-name">Argon</span>
+    </button>
+    <div role="menu" class="model-menu">
+      <div role="menuitem" class="model-option" data-model-id="argon">Argon 2.0</div>
+      <div role="menuitem" class="model-option" data-model-id="pro">Gemini 2.0 Pro</div>
+      <div role="menuitem" class="model-option" data-model-id="flash">Gemini 2.0 Flash</div>
+    </div>
+
+    <!-- Main conversation history -->
+    <div class="conversation-container">
+      <div class="user-query">Explain invariant-driven architecture</div>
+      <div class="model-response">
+        <div class="model-response-text" data-message-author-role="model">
+          <h2>Invariant-Driven Architecture</h2>
+          <p>An invariant is a predicate that must remain <strong>true</strong> at all observable states of the system.</p>
+          <pre><code class="language-rust">pub struct Account {
+    balance: u64,
+}
+
+impl Account {
+    pub fn debit(&mut self, amount: u64) -> Result<(), &'static str> {
+        if self.balance < amount {
+            return Err("invariant violated: balance underflow");
+        }
+        self.balance -= amount;
+        Ok(())
+    }
+}</code></pre>
+          <ul>
+            <li>State boundaries enforce total validation.</li>
+            <li>Failure paths fail-closed without side effects.</li>
+          </ul>
+        </div>
+        <button class="copy-button" aria-label="Copiar resposta" data-test-id="copy-button">Copy</button>
+      </div>
+    </div>
+
+    <!-- Prompt input box -->
+    <div class="input-area">
+      <rich-textarea>
+        <div class="ql-editor" contenteditable="true" role="textbox" aria-label="Digite uma pergunta para o Gemini"></div>
+      </rich-textarea>
+      <div class="send-button-container">
+        <button class="send-button" aria-label="Enviar prompt" data-test-id="send-button"></button>
+        <button class="stop-button" aria-label="Parar" style="display:none"></button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

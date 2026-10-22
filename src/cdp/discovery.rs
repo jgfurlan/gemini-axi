@@ -181,55 +181,110 @@ pub async fn discover_target_http(
         return Ok(ws);
     }
 
-    // 3. Fallback: reuse first available page target
-    for target in &targets {
-        if target.target_type == "page"
-            && let Some(ref ws) = target.web_socket_debugger_url
-        {
-            debug!(id = %target.id, url = %target.url, "Reusing existing Chrome tab");
-            return Ok(ws.clone());
-        }
-    }
-
     Err(AxiError::TabNotFound(match_url.to_string()))
 }
 
 /// Discovers a target WebSocket URL for interacting with Gemini.
-///
-/// If `cdp_endpoint` is already a WebSocket URL (`ws://` or `wss://`), it is returned directly.
-/// If `cdp_endpoint` is an HTTP endpoint (`http://127.0.0.1:9222`), Chrome is queried for open tabs:
-/// - First, attempts HTTP `/json/list` discovery.
-/// - If HTTP returns 404 (Chrome 147+ default profile lockdown) or fails on localhost,
-///   automatically falls back to discovering Chrome via `DevToolsActivePort`.
 pub async fn discover_target(cdp_endpoint: &str, preferred_url: Option<&str>) -> Result<String> {
     let endpoint = cdp_endpoint.trim();
     if endpoint.starts_with("ws://") || endpoint.starts_with("wss://") {
         return Ok(endpoint.to_string());
     }
 
-    match discover_target_http(endpoint, preferred_url).await {
-        Ok(ws) => Ok(ws),
-        Err(e) => {
-            let http_base = normalize_http_url(endpoint);
-            let endpoint_url = Url::parse(&http_base).ok();
-            let requested_port = endpoint_url.as_ref().and_then(|u| u.port());
-            let is_localhost = endpoint_url
-                .as_ref()
-                .map(|u| u.host_str() == Some("127.0.0.1") || u.host_str() == Some("localhost"))
-                .unwrap_or(false);
+    discover_target_http(endpoint, preferred_url).await
+}
 
-            if is_localhost
-                && let Some((active_port, ws_path)) = find_devtools_active_port()
-                && (requested_port == Some(active_port)
-                    || requested_port == Some(9222)
-                    || requested_port.is_none())
-            {
-                return Ok(format!("ws://127.0.0.1:{active_port}{ws_path}"));
-            }
+/// Ensures the CDP endpoint is reachable. If the default endpoint (127.0.0.1:9333) is not
+/// responding and was not explicitly overridden by --cdp or GEMINI_AXI_CDP, auto-launches
+/// Chrome with the dedicated agents profile and flags, waiting up to 10 seconds for it to start.
+pub async fn ensure_cdp_reachable(endpoint: &str, is_explicit: bool) -> Result<()> {
+    let http_base = normalize_http_url(endpoint);
+    let check_url = format!("{http_base}/json/version");
+    let client = Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .map_err(|e| AxiError::Http(e.to_string()))?;
 
-            Err(e)
+    // Check if endpoint is already alive
+    if let Ok(resp) = client.get(&check_url).send().await
+        && resp.status().is_success()
+    {
+        return Ok(());
+    }
+
+    // Never auto-launch if an explicit CDP endpoint was configured
+    if is_explicit {
+        return Err(AxiError::ConnectionRefused(http_base));
+    }
+
+    // Only auto-launch for loopback port 9333
+    let url_parsed = Url::parse(&http_base).ok();
+    let port = url_parsed.as_ref().and_then(|u| u.port());
+    let host = url_parsed.as_ref().and_then(|u| u.host_str());
+    let is_localhost_9333 =
+        (host == Some("127.0.0.1") || host == Some("localhost")) && port == Some(9333);
+
+    if !is_localhost_9333 {
+        return Err(AxiError::ConnectionRefused(http_base));
+    }
+
+    debug!("Agents Chrome on port 9333 not responding; attempting auto-launch");
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").map_err(|_| AxiError::Other("HOME env not set".into()))?;
+        let user_data_dir = format!("{home}/.agents-chrome");
+        tokio::process::Command::new("open")
+            .args([
+                "-na",
+                "Google Chrome",
+                "--args",
+                &format!("--user-data-dir={user_data_dir}"),
+                "--remote-debugging-port=9333",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-renderer-backgrounding",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-background-timer-throttling",
+            ])
+            .spawn()
+            .map_err(|e| AxiError::Other(format!("failed to spawn Chrome: {e}")))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let home = std::env::var("HOME").map_err(|_| AxiError::Other("HOME env not set".into()))?;
+        let user_data_dir = format!("{home}/.agents-chrome");
+        tokio::process::Command::new("google-chrome")
+            .args([
+                &format!("--user-data-dir={user_data_dir}"),
+                "--remote-debugging-port=9333",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-renderer-backgrounding",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-background-timer-throttling",
+            ])
+            .spawn()
+            .map_err(|e| AxiError::Other(format!("failed to spawn Chrome: {e}")))?;
+    }
+
+    // Wait up to 10 seconds for Chrome to be ready
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(10) {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if let Ok(resp) = client.get(&check_url).send().await
+            && resp.status().is_success()
+        {
+            debug!("Agents Chrome started and responsive on port 9333");
+            return Ok(());
         }
     }
+
+    Err(AxiError::Timeout(
+        10,
+        "waiting for Chrome on port 9333".into(),
+    ))
 }
 
 /// Normalizes endpoint URL to an `http://` string without trailing slashes.

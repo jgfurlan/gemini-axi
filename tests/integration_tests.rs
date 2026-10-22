@@ -44,6 +44,7 @@ async fn test_gemini_driver_chat_flow() {
         response_markdown: fixture_md.into(),
         stream_poll_count: 1,
         inject_error: false,
+        stale_response: None,
     })
     .await;
 
@@ -70,6 +71,7 @@ async fn test_gemini_driver_research_flow() {
         response_markdown: dossier_md.into(),
         stream_poll_count: 1,
         inject_error: false,
+        stale_response: None,
     })
     .await;
 
@@ -96,6 +98,7 @@ async fn test_gemini_driver_gem_flow() {
         response_markdown: gem_md.into(),
         stream_poll_count: 1,
         inject_error: false,
+        stale_response: None,
     })
     .await;
 
@@ -141,6 +144,7 @@ async fn test_cdp_injected_error() {
         response_markdown: "error".into(),
         stream_poll_count: 0,
         inject_error: true,
+        stale_response: None,
     })
     .await;
 
@@ -192,7 +196,7 @@ fn test_html_fixtures_match_selectors() {
 fn test_cli_parsing_and_defaults() {
     // 1. Chat command
     let cli = Cli::parse_from(["gemini-axi", "chat", "Draft invariant spec", "-m", "argon"]);
-    assert_eq!(cli.cdp, "http://127.0.0.1:9222");
+    assert_eq!(cli.cdp, "http://127.0.0.1:9333");
     match cli.command {
         CliCommand::Chat(args) => {
             assert_eq!(args.prompt, Some("Draft invariant spec".into()));
@@ -248,6 +252,7 @@ async fn test_cli_binary_chat_execution() {
         response_markdown: fixture_md.into(),
         stream_poll_count: 1,
         inject_error: false,
+        stale_response: None,
     })
     .await;
 
@@ -274,6 +279,7 @@ async fn test_cli_binary_research_file_output() {
         response_markdown: dossier_md.into(),
         stream_poll_count: 1,
         inject_error: false,
+        stale_response: None,
     })
     .await;
 
@@ -329,4 +335,65 @@ async fn test_cli_binary_failure_output_cleanliness() {
     assert!(
         stderr.starts_with("error: connection refused connecting to CDP at http://127.0.0.1:49991")
     );
+}
+
+#[tokio::test]
+async fn test_mock_cdp_rejects_stale_response_and_returns_fresh() {
+    let stale_text = "# Stale Response\n\nSou um modelo de linguagem.";
+    let fresh_text = "OK 42";
+
+    let server = MockCdpServer::start(MockCdpConfig {
+        response_markdown: fresh_text.into(),
+        stream_poll_count: 2,
+        inject_error: false,
+        stale_response: Some(stale_text.into()),
+    })
+    .await;
+
+    let driver = GeminiDriver::connect_and_prepare(&server.base_url, None, Duration::from_secs(5))
+        .await
+        .unwrap();
+
+    let result = driver
+        .run_chat(
+            "teste gemini-axi: responda apenas com a palavra OK e a soma de 17 + 25",
+            None,
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result, fresh_text);
+    assert!(!result.contains("Sou um modelo"));
+}
+
+#[tokio::test]
+async fn test_mock_cdp_fails_when_generation_does_not_start() {
+    let stale_text = "Sou um modelo de linguagem.";
+
+    let server = MockCdpServer::start(MockCdpConfig {
+        response_markdown: "never reached".into(),
+        stream_poll_count: 0, // generation never starts
+        inject_error: false,
+        stale_response: Some(stale_text.into()),
+    })
+    .await;
+
+    let driver = GeminiDriver::connect_and_prepare(&server.base_url, None, Duration::from_secs(5))
+        .await
+        .unwrap();
+
+    let err = driver
+        .run_chat(
+            "teste gemini-axi: falha proposital",
+            None,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+
+    match err {
+        gemini_axi::error::AxiError::GenerationDidNotStart(_) => {}
+        other => panic!("Expected GenerationDidNotStart error, got: {other:?}"),
+    }
 }

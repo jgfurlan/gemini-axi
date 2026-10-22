@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, trace, warn};
 
-use super::discovery::{discover_target_http, find_devtools_active_port, normalize_http_url};
+use super::discovery::{discover_target_http, normalize_http_url};
 use super::types::{CdpRequest, CdpResponse, EvaluateResult};
 use crate::error::{AxiError, Result};
 use crate::gemini::selectors::BASE_APP_URL;
@@ -22,6 +22,9 @@ pub struct CdpClient {
     write_tx: mpsc::Sender<Message>,
     pending: PendingMap,
     session_id: Option<String>,
+    target_id: Option<String>,
+    is_created_target: bool,
+    browser_client: Option<Arc<CdpClient>>,
 }
 
 impl CdpClient {
@@ -117,6 +120,9 @@ impl CdpClient {
             write_tx,
             pending,
             session_id: None,
+            target_id: None,
+            is_created_target: false,
+            browser_client: None,
         })
     }
 
@@ -128,12 +134,33 @@ impl CdpClient {
             write_tx: self.write_tx.clone(),
             pending: self.pending.clone(),
             session_id: Some(session_id.into()),
+            target_id: self.target_id.clone(),
+            is_created_target: self.is_created_target,
+            browser_client: self.browser_client.clone(),
         }
+    }
+
+    /// Configures the target ID, whether it was created dynamically, and the root browser client.
+    pub fn with_target(
+        mut self,
+        target_id: impl Into<String>,
+        is_created: bool,
+        browser: Option<Arc<CdpClient>>,
+    ) -> Self {
+        self.target_id = Some(target_id.into());
+        self.is_created_target = is_created;
+        self.browser_client = browser;
+        self
     }
 
     /// Returns the active session ID, if any.
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+
+    /// Returns the target ID, if known.
+    pub fn target_id(&self) -> Option<&str> {
+        self.target_id.as_deref()
     }
 
     /// Connects to a Chrome browser-level WebSocket and attaches to a matching page target
@@ -144,59 +171,67 @@ impl CdpClient {
     ) -> Result<Self> {
         debug!(browser_ws = %browser_ws, "Connecting to browser WebSocket");
         let client = Self::connect(browser_ws).await?;
-        let match_url = preferred_url.unwrap_or("gemini.google.com");
+        let browser_arc = Arc::new(client.clone());
 
-        let val = client
-            .call("Target.getTargets", serde_json::json!({}))
-            .await?;
-        let targets = val
-            .get("targetInfos")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
+        // By default, create a fresh tab for clean conversations rather than reusing
+        // an existing tab that might contain prior conversations and stale messages.
+        let (tid, is_created) = if let Some(purl) = preferred_url {
+            let val = client
+                .call("Target.getTargets", serde_json::json!({}))
+                .await?;
+            let targets = val
+                .get("targetInfos")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
 
-        let mut target_id = None;
-        for t in &targets {
-            let t_type = t.get("type").and_then(|v| v.as_str()).unwrap_or_default();
-            let t_url = t.get("url").and_then(|v| v.as_str()).unwrap_or_default();
-            if t_type == "page"
-                && t_url.contains(match_url)
-                && let Some(id) = t.get("targetId").and_then(|v| v.as_str())
-            {
-                debug!(id = %id, url = %t_url, "Found matching target via Target.getTargets");
-                target_id = Some(id.to_string());
-                break;
+            let mut matched_id = None;
+            for t in &targets {
+                let t_type = t.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+                let t_url = t.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+                if t_type == "page"
+                    && t_url.contains(purl)
+                    && let Some(id) = t.get("targetId").and_then(|v| v.as_str())
+                {
+                    debug!(id = %id, url = %t_url, "Found matching target for preferred URL");
+                    matched_id = Some(id.to_string());
+                    break;
+                }
             }
-        }
 
-        if target_id.is_none() {
-            let target_url = preferred_url.unwrap_or(BASE_APP_URL);
-            debug!(url = %target_url, "Creating new tab via Target.createTarget");
+            if let Some(id) = matched_id {
+                (id, false)
+            } else {
+                debug!(url = %purl, "Creating new tab for preferred URL via Target.createTarget");
+                let create_res = client
+                    .call("Target.createTarget", serde_json::json!({ "url": purl }))
+                    .await?;
+                let id = create_res
+                    .get("targetId")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        AxiError::Other("missing targetId from Target.createTarget".into())
+                    })?;
+                (id.to_string(), true)
+            }
+        } else {
+            let target_url = BASE_APP_URL;
+            debug!(url = %target_url, "Creating fresh tab via Target.createTarget for new conversation");
             let create_res = client
                 .call(
                     "Target.createTarget",
                     serde_json::json!({ "url": target_url }),
                 )
                 .await?;
-            if let Some(id) = create_res.get("targetId").and_then(|v| v.as_str()) {
-                target_id = Some(id.to_string());
-            }
-        }
+            let id = create_res
+                .get("targetId")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    AxiError::Other("missing targetId from Target.createTarget".into())
+                })?;
+            (id.to_string(), true)
+        };
 
-        if target_id.is_none() {
-            for t in &targets {
-                let t_type = t.get("type").and_then(|v| v.as_str()).unwrap_or_default();
-                if t_type == "page"
-                    && let Some(id) = t.get("targetId").and_then(|v| v.as_str())
-                {
-                    debug!(id = %id, "Reusing first available page target");
-                    target_id = Some(id.to_string());
-                    break;
-                }
-            }
-        }
-
-        let tid = target_id.ok_or_else(|| AxiError::TabNotFound(match_url.to_string()))?;
         let attach_res = client
             .call(
                 "Target.attachToTarget",
@@ -214,13 +249,15 @@ impl CdpClient {
         debug!(
             target_id = %tid,
             session_id = %session_id,
+            is_created = is_created,
             "Attached to target session via browser WebSocket"
         );
-        Ok(client.with_session(session_id))
+        Ok(client
+            .with_session(session_id)
+            .with_target(tid, is_created, Some(browser_arc)))
     }
 
-    /// Discovers target page and connects, seamlessly handling both HTTP targets
-    /// and browser-level `DevToolsActivePort` endpoints.
+    /// Discovers target page and connects over WebSocket CDP.
     pub async fn connect_to_target(
         cdp_endpoint: &str,
         preferred_url: Option<&str>,
@@ -234,39 +271,38 @@ impl CdpClient {
             }
         }
 
-        // Try HTTP target discovery first (e.g. mock server or non-restricted profile)
-        match discover_target_http(endpoint, preferred_url).await {
-            Ok(page_ws) => {
-                debug!(ws_url = %page_ws, "Connected to Chrome target via HTTP discovery");
-                Self::connect(&page_ws).await
-            }
-            Err(e) => {
-                // If HTTP failed or returned 404, check DevToolsActivePort for daily Chrome
-                let http_base = normalize_http_url(endpoint);
-                let endpoint_url = url::Url::parse(&http_base).ok();
-                let requested_port = endpoint_url.as_ref().and_then(|u| u.port());
-                let is_localhost = endpoint_url
-                    .as_ref()
-                    .map(|u| u.host_str() == Some("127.0.0.1") || u.host_str() == Some("localhost"))
-                    .unwrap_or(false);
+        let http_base = normalize_http_url(endpoint);
+        let version_url = format!("{http_base}/json/version");
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .map_err(|e| AxiError::Http(e.to_string()))?;
 
-                if is_localhost
-                    && let Some((active_port, ws_path)) = find_devtools_active_port()
-                    && (requested_port == Some(active_port)
-                        || requested_port == Some(9222)
-                        || requested_port.is_none())
-                {
-                    let browser_ws = format!("ws://127.0.0.1:{active_port}{ws_path}");
-                    debug!(
-                        active_port = active_port,
-                        "Connecting via DevToolsActivePort browser WebSocket"
-                    );
-                    return Self::connect_browser_target(&browser_ws, preferred_url).await;
-                }
-
-                Err(e)
-            }
+        if let Ok(resp) = http_client.get(&version_url).send().await
+            && resp.status().is_success()
+            && let Ok(val) = resp.json::<serde_json::Value>().await
+            && let Some(browser_ws) = val.get("webSocketDebuggerUrl").and_then(|v| v.as_str())
+        {
+            debug!(browser_ws = %browser_ws, "Connecting via browser-level WebSocket");
+            return Self::connect_browser_target(browser_ws, preferred_url).await;
         }
+
+        let page_ws = discover_target_http(endpoint, preferred_url).await?;
+        debug!(ws_url = %page_ws, "Connected to Chrome target via HTTP discovery");
+        Self::connect(&page_ws).await
+    }
+
+    /// Brings the target page to the front and enables focus emulation to prevent
+    /// Chrome background throttling (e.g. frozen requestAnimationFrame / timers).
+    pub async fn ensure_active_and_focused(&self) -> Result<()> {
+        let _ = self.call("Page.bringToFront", serde_json::json!({})).await;
+        let _ = self
+            .call(
+                "Emulation.setFocusEmulationEnabled",
+                serde_json::json!({ "enabled": true }),
+            )
+            .await;
+        Ok(())
     }
 
     /// Invokes a CDP method with parameters and a default 30-second timeout.
@@ -347,6 +383,14 @@ impl CdpClient {
         }
     }
 
+    /// Evaluates a JavaScript expression and returns the result as a u64.
+    pub async fn evaluate_u64(&self, expression: &str) -> Result<u64> {
+        match self.evaluate(expression).await? {
+            Some(serde_json::Value::Number(n)) => Ok(n.as_u64().unwrap_or(0)),
+            _ => Ok(0),
+        }
+    }
+
     /// Evaluates a JavaScript expression and returns the result as a String.
     pub async fn evaluate_string(&self, expression: &str) -> Result<Option<String>> {
         match self.evaluate(expression).await? {
@@ -375,6 +419,19 @@ impl CdpClient {
         self.call("Page.enable", serde_json::json!({})).await?;
         self.call("Runtime.enable", serde_json::json!({})).await?;
         self.call("DOM.enable", serde_json::json!({})).await?;
+        Ok(())
+    }
+
+    /// If this client was attached to a dynamically created target tab, closes that target tab.
+    pub async fn close_target(&self) -> Result<()> {
+        if self.is_created_target
+            && let (Some(tid), Some(browser)) = (&self.target_id, &self.browser_client)
+        {
+            debug!(target_id = %tid, "Closing dynamically created target tab");
+            let _ = browser
+                .call("Target.closeTarget", serde_json::json!({ "targetId": tid }))
+                .await;
+        }
         Ok(())
     }
 

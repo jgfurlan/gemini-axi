@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Gemini - Deep Research</title>
+</head>
+<body>
+  <div id="app">
+    <div class="header">
+      <button class="deep-research-toggle" aria-label="Deep Research" data-test-id="deep-research-toggle">Deep Research</button>
+    </div>
+
+    <!-- Research plan awaiting confirmation -->
+    <div class="research-plan" data-test-id="research-plan">
+      <h3>Proposed Research Plan</h3>
+      <ol>
+        <li>Survey zero-knowledge verification frameworks.</li>
+        <li>Benchmark cryptographic proof generation times.</li>
+        <li>Synthesize comparative matrix of SNARKs vs STARKs.</li>
+      </ol>
+      <button class="start-research-btn" aria-label="Start research" data-test-id="start-research-button">Start research</button>
+    </div>
+
+    <!-- Synthesized final dossier -->
+    <div class="model-response">
+      <div class="model-response-text" data-message-author-role="model">
+        # Deep Research Dossier: Zero-Knowledge Verification
+
+        ## Executive Summary
+        Zero-knowledge proof systems provide cryptographic verification of computational integrity without revealing witness data.
+
+        ## Benchmark Analysis
+        - **Groth16**: Minimal proof size (128 bytes), trusted setup required.
+        - **PlonK**: Universal SRS, quadratic prover overhead.
+        - **STARKs**: Transparent setup, quantum-resistant, larger proof footprint.
+      </div>
+    </div>
+
+    <div class="input-area">
+      <rich-textarea>
+        <div class="ql-editor" contenteditable="true" role="textbox"></div>
+      </rich-textarea>
+      <button class="send-button" aria-label="Enviar prompt"></button>
+    </div>
+  </div>
+</body>
+</html>
